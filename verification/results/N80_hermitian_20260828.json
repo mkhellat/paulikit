@@ -1,0 +1,32 @@
+{
+  "command": "python run_verification.py --n 80 --hermitian --against projection",
+  "timestamp_utc": "2026-08-28T11:52:53Z",
+  "git_commit": "dadf17b177e339c7df5790ceb5b2370d131fba1e",
+  "versions": {
+    "python": "3.12.13",
+    "numpy": "2.5.2",
+    "scipy": "1.18.1",
+    "pennylane": "0.45.1"
+  },
+  "machine": "x86_64",
+  "platform": "Linux-7.1.8-arch1-3-x86_64-with-glibc2.44",
+  "n_oscillators": 80,
+  "n_qubits": 12,
+  "dim": 4096,
+  "hermitian": true,
+  "seed": null,
+  "nnz": 12800,
+  "paulikit_time_s": 6.893578901000069,
+  "paulikit_n_terms": 6473728,
+  "atol": 1e-09,
+  "timeout_note": null,
+  "projection_verification": {
+    "n_terms": 6473728,
+    "max_abs_error": 1.0408340855860843e-17,
+    "mean_abs_error": 2.0490640749965784e-20,
+    "worst_label": "IIIIIXIXIIII",
+    "passed": true,
+    "wall_time_s": 30.26484732799986,
+    "us_per_term": 4.675026094392575
+  }
+}

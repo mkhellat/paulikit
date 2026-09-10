@@ -1,0 +1,40 @@
+{
+  "command": "python run_verification.py --n 20 --hermitian --against both --chunk-size 256",
+  "timestamp_utc": "2026-08-28T12:31:32Z",
+  "git_commit": "dadf17b177e339c7df5790ceb5b2370d131fba1e",
+  "versions": {
+    "python": "3.12.13",
+    "numpy": "2.5.2",
+    "scipy": "1.18.1",
+    "pennylane": "0.45.1"
+  },
+  "machine": "x86_64",
+  "platform": "Linux-7.1.8-arch1-3-x86_64-with-glibc2.44",
+  "n_oscillators": 20,
+  "n_qubits": 8,
+  "dim": 256,
+  "hermitian": true,
+  "seed": null,
+  "nnz": 800,
+  "paulikit_time_s": 0.027152147999913723,
+  "paulikit_n_terms": 24448,
+  "atol": 1e-09,
+  "timeout_note": null,
+  "projection_verification": {
+    "n_terms": 24448,
+    "max_abs_error": 1.3877787807814457e-17,
+    "mean_abs_error": 2.97446041037908e-19,
+    "worst_label": "IIIXIXII",
+    "passed": true,
+    "wall_time_s": 0.05847362199983763,
+    "us_per_term": 2.391754826564039
+  },
+  "pennylane_verification": {
+    "wall_time_s": 9.368452797000373,
+    "n_terms": 24448,
+    "matched_labels": 24448,
+    "paulikit_n_terms": 24448,
+    "max_abs_diff_on_matched": 1.3877787807814457e-17,
+    "term_count_equal": true
+  }
+}

@@ -1,0 +1,33 @@
+{
+  "command": "python run_verification.py --n 150 --hermitian --streaming --chunk-size 256 --timeout-note streaming fix: fwht_pauli_terms_iter + verify_terms_streaming, under ulimit -v 12000000 for safety",
+  "timestamp_utc": "2026-08-28T12:55:19Z",
+  "git_commit": "dadf17b177e339c7df5790ceb5b2370d131fba1e",
+  "versions": {
+    "python": "3.12.13",
+    "numpy": "2.5.2",
+    "scipy": "1.18.1",
+    "pennylane": "0.45.1"
+  },
+  "machine": "x86_64",
+  "platform": "Linux-7.1.8-arch1-3-x86_64-with-glibc2.44",
+  "n_oscillators": 150,
+  "n_qubits": 14,
+  "dim": 16384,
+  "hermitian": true,
+  "seed": null,
+  "nnz": 45000,
+  "atol": 1e-09,
+  "timeout_note": "streaming fix: fwht_pauli_terms_iter + verify_terms_streaming, under ulimit -v 12000000 for safety",
+  "streaming": true,
+  "paulikit_time_s": null,
+  "paulikit_n_terms": 91652096,
+  "projection_verification": {
+    "n_terms": 91652096,
+    "max_abs_error": 8.673617379884035e-19,
+    "mean_abs_error": 2.984451088734762e-21,
+    "worst_label": "IIIIIIXIIXXIXI",
+    "passed": true,
+    "wall_time_s": 369.6572776009998,
+    "us_per_term": 4.033265945178163
+  }
+}
