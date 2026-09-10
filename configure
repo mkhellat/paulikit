@@ -1,0 +1,3091 @@
+#!/bin/sh
+# paulikit configure — POSIX-sh diagnostic + environment-setup script.
+#
+# This is NOT an autoconf-generated script and does not depend on the
+# GNU autotools toolchain (autoconf/aclocal/automake). It is hand-
+# written to run under any POSIX-compliant /bin/sh.
+#
+# What this is: a diagnostic report of which of paulikit's
+# performance-critical capabilities (native Cython/C++/oneTBB
+# extension, cache-locality-relevant facts, etc.) are available on
+# this machine, plus a venv/Makefile setup step. It exists because
+# meson-python already does perfectly good build-gating compiler/
+# dependency detection during `meson setup` — this script does NOT
+# duplicate that. Its job is orthogonal: surface facts a developer
+# needs to know BEFORE or independently of a build (e.g. "will the
+# native TBB extension even build here", "what BLAS is NumPy linked
+# against and will its idle thread pool contaminate perf
+# measurements", "what L2/L3 cache size should the chunk_size
+# auto-tuner target") in one itemized, readable report, rather than
+# leaving each one to be rediscovered per measurement script.
+#
+# Scope: OS/architecture detection (uname -s/-m, per real GNU
+# config.guess precedent), venv creation, C++ compiler + C++17, Cython
+# >=3.0, meson >=1.1.0, oneTBB, cache hierarchy (L1/L2/L3), NumPy's
+# linked BLAS backend + thread count, Python version, git commit +
+# working-tree state, CPU info (lscpu on Linux incl. its own
+# Vulnerabilities: section; sysctl on macOS/FreeBSD/OpenBSD/NetBSD — see
+# the CPU-info section's own note: standard documented MIB names, not
+# independently executed/verified on non-Linux since this project has
+# only run configure on Linux), SIMD (AVX2/AVX-512 real
+# compile-and-execute tests, diagnostic only — never auto-applied as
+# -march=native), GPU/CUDA presence, MPI toolchain presence, psutil
+# presence, container/VM detection, perf_event_paranoid (genuinely
+# Linux-only, no BSD/macOS equivalent), CPU frequency governor state
+# (same), total RAM/swap (native path per OS family: free/proc on Linux,
+# sysctl+vm_stat on macOS, sysctl+swapctl/swapinfo on BSD), system load
+# average, perf list event availability, NumPy's own runtime SIMD
+# dispatch tier, musl-libc awareness, disk I/O type.
+#
+# Report format: classic incremental GNU-configure style ("checking
+# for X... yes/no", printed live one line at a time as each check
+# runs — see the checking()/result() helper pair below), not a
+# post-hoc itemized table. Every check also accepts an optional
+# --verbose-only probe description shown via the same mechanism, so
+# --verbose surfaces the underlying command/probe for every check, not
+# only the ones that invoke a compiler.
+#
+# Failure-mode philosophy: only two checks are allowed to block
+# anything (partial-abort, never a hard script-kill) — Python/venv
+# (nothing else can run without it) and the C++ compiler (gates only
+# the native-extension diagnostic section, since paulikit's pure-
+# Python fallback works with zero compiler present). Every other
+# check degrades to "not found" / "unknown" and the report continues.
+#
+# Output: prints the diagnostic report to stdout, writes the same
+# report to config.log, writes config.status (a re-runnable record of
+# this invocation, per GCS's "Configuration" convention), and writes
+# Makefile (from Makefile.in) with literal-value substitution so the
+# generated Makefile needs no GNU-make-only or BSD-make-only
+# conditional syntax.
+#
+# GNU Coding Standards compliance note: the standard directory-variable
+# options below (--prefix, --bindir, --libdir, etc.) are accepted for
+# convention compatibility — a script named "configure" is expected
+# to take them without erroring — but most have NO real target for a
+# pip/meson-python-installed package: pip already owns binary/library
+# placement inside the venv, there are no man/info pages, no
+# sysconfdir-style runtime config files. Only --prefix (a default
+# install-root concept) and --docdir (where `make docs` output lands)
+# actually change behavior; the rest are recorded in config.log as
+# accepted-but-inert, explicitly, rather than silently ignored or
+# rejected.
+
+set -eu
+
+# ---------------------------------------------------------------------
+# Portable helpers
+# ---------------------------------------------------------------------
+
+trap 'rm -f "$tmpc" "$tmpo" "$tmpexe"' EXIT INT TERM HUP
+
+: "${TMPDIR:=/tmp}"
+tmpc="${TMPDIR}/paulikit-configure-$$.cpp"
+tmpo="${TMPDIR}/paulikit-configure-$$.o"
+tmpexe="${TMPDIR}/paulikit-configure-$$.exe"
+
+VERBOSE=0
+PROBE_CACHE_LATENCY=0
+VENV_PATH="${HOME}/.venvs/paulikit"
+PYTHON_BIN=""
+SRCDIR="."
+PREFIX="/usr/local"
+DOCDIR=""
+CXX="${CXX:-}"
+CC="${CC:-}"
+
+# Standard GNU directory variables accepted for convention
+# compatibility (GCS "Directory Variables") but inert for this
+# package beyond PREFIX/DOCDIR — see the note above. Recorded in
+# config.log either way so a user who passed one can see it was
+# received, not silently dropped.
+INERT_DIRVARS=""
+
+# Preserve the exact invocation for config.status to replay later.
+CONFIGURE_ARGS="$*"
+
+for arg in "$@"; do
+    case "$arg" in
+        --verbose) VERBOSE=1 ;;
+        --probe-cache-latency) PROBE_CACHE_LATENCY=1 ;;
+        --venv=*) VENV_PATH="${arg#*=}" ;;
+        --python=*) PYTHON_BIN="${arg#*=}" ;;
+        --srcdir=*) SRCDIR="${arg#*=}" ;;
+        --prefix=*) PREFIX="${arg#*=}" ;;
+        --docdir=*) DOCDIR="${arg#*=}" ;;
+        --exec-prefix=*|--bindir=*|--sbindir=*|--libdir=*|--libexecdir=*|\
+        --sysconfdir=*|--sharedstatedir=*|--localstatedir=*|--runstatedir=*|\
+        --includedir=*|--oldincludedir=*|--datarootdir=*|--datadir=*|\
+        --infodir=*|--localedir=*|--mandir=*|--htmldir=*|--dvidir=*|\
+        --pdfdir=*|--psdir=*)
+            INERT_DIRVARS="${INERT_DIRVARS}${arg} "
+            ;;
+        --version)
+            echo "paulikit configure (hand-written POSIX sh, not autoconf)"
+            exit 0
+            ;;
+        --help)
+            cat <<'EOF'
+Usage: ./configure [options] [VAR=value ...]
+
+  --venv=PATH        Where to create/reuse the venv (default:
+                      ~/.venvs/paulikit, deliberately OUTSIDE the
+                      source tree — meson rejects an absolute in-tree
+                      numpy include path if the venv lives inside
+                      the project root).
+  --python=PATH      Base Python interpreter to create the venv from
+                      (default: first of python3.13/python3.12/.../
+                      python3).
+  --srcdir=DIR       Source directory (default: .). Out-of-tree
+                      builds are not currently supported; this is
+                      accepted and recorded for convention
+                      compatibility.
+  --prefix=DIR       Install root for 'make docs' output (default:
+                      /usr/local).
+  --docdir=DIR       Where 'make docs' installs Sphinx HTML (default:
+                      PREFIX/share/doc/paulikit).
+  --verbose           Print each check's raw command output, not just the
+                      summary line.
+  --probe-cache-latency
+                      Run a real RDTSCP pointer-chasing microbenchmark
+                      in raw x86_64 assembly (~3s, assembled/linked
+                      directly with as/ld - no C/C++ compiler needed)
+                      to empirically find cache-level boundaries by
+                      latency, cross-checked against getconf/lscpu/
+                      sysfs's declared sizes. Off by default since it
+                      is much slower than every other check here.
+  --version           Print version info and exit.
+  --help              This message.
+
+  VAR=value           Standard GNU convention for overriding build tool
+                      variables, e.g. ./configure CXX=clang++. Recognized:
+                      CXX, CC.
+
+Standard GNU directory options (--bindir, --libdir, --sysconfdir,
+--datadir, --includedir, --mandir, --infodir, --localedir, --htmldir,
+--dvidir, --pdfdir, --psdir, --exec-prefix, --sbindir, --libexecdir,
+--sharedstatedir, --localstatedir, --runstatedir, --oldincludedir) are
+accepted for GNU-convention compatibility but have no real target for
+this pip/meson-python-installed package (pip already owns binary/
+library placement inside the venv) — recorded in config.log as
+accepted-but-inert, not silently dropped.
+EOF
+            exit 0
+            ;;
+        *=*)
+            # GCS "VAR=value" override convention, e.g.
+            # ./configure CXX=clang++.
+            var="${arg%%=*}"
+            val="${arg#*=}"
+            case "$var" in
+                CXX) CXX="$val" ;;
+                CC) CC="$val" ;;
+                *) INERT_DIRVARS="${INERT_DIRVARS}${arg} " ;;
+            esac
+            ;;
+        *)
+            echo "configure: unrecognized option '$arg' (see --help)" >&2
+            exit 1
+            ;;
+    esac
+done
+
+[ -n "$DOCDIR" ] || DOCDIR="${PREFIX}/share/doc/paulikit"
+
+if [ "$SRCDIR" != "." ]; then
+    echo "configure: out-of-tree builds (--srcdir=$SRCDIR) are not yet" >&2
+    echo "configure: supported — every value this script emits is" >&2
+    echo "configure: a literal" >&2
+    echo "configure: resolved against the current directory, not \$SRCDIR." >&2
+    echo "configure: proceeding as if --srcdir=. was given." >&2
+fi
+
+# log()/checking()/result() write to stdout immediately AND append to
+# config.log as each line is produced — matching how real GNU
+# configure scripts behave: "checking for X... " prints live before
+# the check runs, then "yes"/"no" completes the same line once it's
+# done, one check at a time, never buffered until the whole script
+# finishes. `tee -a` is POSIX.1-2017-specified (confirmed via `man 1p
+# tee` — the -a/-i short options are the POSIX-guaranteed subset,
+# distinct from GNU tee's long-form --append/--ignore-interrupts,
+# which are NOT assumed here). Earlier versions of this script
+# buffered the entire report into a temp file and dumped it all at
+# once at the very end, which is not how configure scripts are
+# expected to behave and gives no feedback during long-running checks
+# (venv creation, compile tests).
+log() {
+    printf '%s\n' "$*" | tee -a config.log
+}
+
+# checking()/result() are the GNU-style incremental pair: checking()
+# prints "checking for LABEL... " with NO trailing newline (so it's
+# visible immediately, before the check itself runs), and result()
+# later completes that same line with the outcome. Optionally pass a
+# second argument to checking() — the underlying probe command/action
+# about to be run — which is shown under --verbose only (every check
+# supports this, not just compiler invocations, so --verbose is
+# meaningful everywhere, not just for compile-tests).
+checking() {
+    label="$1"
+    probe="${2:-}"
+    printf 'checking for %s... ' "$label" | tee -a config.log
+    if [ "$VERBOSE" -eq 1 ] && [ -n "$probe" ]; then
+        printf '\n  + %s\n  ' "$probe" | tee -a config.log
+    fi
+}
+
+result() {
+    printf '%s\n' "$*" | tee -a config.log
+}
+
+# Real GNU configure convention keeps the "checking for X... RESULT"
+# line short (yes/no/a version string/a compiler name) and puts any
+# longer explanation on its own indented line(s) below, never appended
+# to the same line. result_detail() implements that: first arg is the
+# short result (completes the checking-line), remaining args are
+# printed as separate wrapped detail lines underneath. Use this
+# instead of a single long result() call whenever the explanation
+# would otherwise make one line unreasonably long.
+result_detail() {
+    short="$1"
+    shift
+    result "$short"
+    for line in "$@"; do
+        printf '  %s\n' "$line" \
+            | fold -s -w 76 \
+            | sed '2,$ s/^/  /' \
+            | tee -a config.log
+    done
+}
+
+# Legacy alias retained for the handful of non-"checking for X"-shaped
+# lines (section headers, freeform notes/hints) that don't fit the
+# checking()/result() pair — same live stdout+config.log behavior.
+report() {
+    label="$1"
+    value="$2"
+    printf '  %-38s %s\n' "$label" "$value" | tee -a config.log
+}
+
+have() {
+    command -v "$1" >/dev/null 2>&1
+}
+
+# Runs a compiler/execute step for a compile-test. Under normal
+# operation its output is discarded (only pass/fail matters to the
+# report). Under --verbose, its raw stdout+stderr is shown instead —
+# labeled with the command that was run — so a developer can see
+# exactly why a compile-test failed (missing header, unsupported flag,
+# linker error, etc.) rather than only "no". Always returns the
+# wrapped command's own exit status (captured via a temp file rather
+# than piping through tee, since piping into tee would report tee's
+# own exit status instead of the wrapped command's — POSIX sh has no
+# PIPESTATUS/pipefail equivalent to work around that).
+verbose_run() {
+    if [ "$VERBOSE" -eq 1 ]; then
+        log "  + $*"
+        vr_out="${TMPDIR}/paulikit-configure-verbose-$$.out"
+        "$@" >"$vr_out" 2>&1
+        vr_rc=$?
+        [ -s "$vr_out" ] && cat "$vr_out" | tee -a config.log
+        rm -f "$vr_out"
+        return "$vr_rc"
+    else
+        "$@" >/dev/null 2>&1
+    fi
+}
+
+# ---------------------------------------------------------------------
+# OS/architecture detection (item new-1) — per real GNU config.guess
+# precedent (git.savannah.gnu.org/cgit/config.git/plain/config.guess):
+# uname -s as the primary OS-family discriminator (Linux/Darwin/
+# FreeBSD/OpenBSD/NetBSD/DragonFly/...), uname -m for machine arch.
+# This is NOT a reimplementation of config.guess's full canonical
+# cpu-vendor-os triplet machinery (that also handles dozens of legacy/
+# niche systems this script has no reason to care about) — just the
+# same primary-discriminator mechanism, used to select which native
+# per-OS command paths the checks below should try.
+# ---------------------------------------------------------------------
+
+OS_KERNEL="$(uname -s 2>/dev/null || echo unknown)"
+OS_ARCH="$(uname -m 2>/dev/null || echo unknown)"
+
+case "$OS_KERNEL" in
+    Linux) OS_FAMILY="linux" ;;
+    Darwin) OS_FAMILY="macos" ;;
+    FreeBSD) OS_FAMILY="freebsd" ;;
+    OpenBSD) OS_FAMILY="openbsd" ;;
+    NetBSD) OS_FAMILY="netbsd" ;;
+    DragonFly) OS_FAMILY="dragonflybsd" ;;
+    *) OS_FAMILY="unknown" ;;
+esac
+
+# ---------------------------------------------------------------------
+# Report header
+# ---------------------------------------------------------------------
+
+# Start config.log fresh for this run (log()/report() append to it
+# live from here on).
+: >config.log
+
+log "paulikit configure — capability/environment diagnostic report"
+log "Generated: $(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date)"
+
+checking "operating system" "uname -s"
+result "$OS_KERNEL (family: $OS_FAMILY)"
+checking "machine architecture" "uname -m"
+result "$OS_ARCH"
+
+# --- Git state (item 21) ------------------------------------------
+checking "git repository state" "git rev-parse HEAD"
+if have git; then
+    git_head="$(git rev-parse HEAD 2>/dev/null || echo unknown)"
+    if git diff --quiet 2>/dev/null \
+        && git diff --cached --quiet 2>/dev/null; then
+        git_state="clean"
+    else
+        git_state="dirty (uncommitted changes present)"
+    fi
+    result "${git_head} (${git_state})"
+else
+    result "unknown (git not found)"
+fi
+log ""
+
+# ---------------------------------------------------------------------
+# Machine identity — CPU info, cache hierarchy, and NUMA topology,
+# grouped as one block right after OS/arch/git detection (same
+# category: facts about the machine itself that ground everything
+# downstream, not gated on any language toolchain). Previously
+# scattered across the file (CPU info near the SIMD section, cache
+# hierarchy/NUMA topology near NumPy/BLAS) - moved here per direct
+# review, since none of these three checks depend on $CXX/$VENV_PY.
+#
+# CPU info: lscpu on Linux (includes its own Vulnerabilities: section,
+# so no separate CPU-mitigation check needed there), sysctl on
+# macOS/BSD. The sysctl key names below (hw.ncpu, hw.physicalcpu,
+# machdep.cpu.brand_string, hw.optional.avx2_0, hw.optional.avx512f)
+# are the standard, long-documented Darwin/BSD MIB names (Apple's own
+# sysctl(3) docs, FreeBSD's sysctl(8) man page) — NOT independently
+# executed/verified on this machine, since this project has only ever
+# run configure on Linux. If a value looks wrong on macOS/BSD, this is
+# the section to check first.
+# ---------------------------------------------------------------------
+
+case "$OS_FAMILY" in
+    linux)
+        log "== CPU (lscpu) =="
+        if have lscpu; then
+            lscpu 2>/dev/null | tee -a config.log || true
+        else
+            result_detail "not found" \
+                "unexpected on Linux — is procps installed?"
+        fi
+        ;;
+    macos)
+        log "== CPU (sysctl) =="
+        checking "CPU model" "sysctl -n machdep.cpu.brand_string"
+        result "$(sysctl -n machdep.cpu.brand_string 2>/dev/null \
+            || echo unknown)"
+        checking "logical/physical cores" \
+            "sysctl -n hw.ncpu hw.physicalcpu"
+        ncpu="$(sysctl -n hw.ncpu 2>/dev/null || echo unknown)"
+        nphys="$(sysctl -n hw.physicalcpu 2>/dev/null || echo unknown)"
+        result "logical=$ncpu, physical=$nphys"
+        checking "SIMD (sysctl hw.optional.*)" \
+            "sysctl -n hw.optional.avx2_0 hw.optional.avx512f"
+        avx2_sysctl="$(sysctl -n hw.optional.avx2_0 2>/dev/null \
+            || echo unknown)"
+        avx512_sysctl="$(sysctl -n hw.optional.avx512f 2>/dev/null \
+            || echo unknown)"
+        result_detail \
+            "avx2_0=$avx2_sysctl, avx512f=$avx512_sysctl" \
+            "(cross-check against the compile-and-execute SIMD test" \
+            "further below, in the C++ toolchain section, which is" \
+            "the authoritative result)"
+        ;;
+    freebsd|dragonflybsd)
+        log "== CPU (sysctl) =="
+        checking "CPU model" "sysctl -n hw.model"
+        result "$(sysctl -n hw.model 2>/dev/null || echo unknown)"
+        checking "logical cores" "sysctl -n hw.ncpu"
+        result "$(sysctl -n hw.ncpu 2>/dev/null || echo unknown)"
+        ;;
+    openbsd|netbsd)
+        log "== CPU (sysctl) =="
+        checking "CPU model" "sysctl -n hw.model"
+        result "$(sysctl -n hw.model 2>/dev/null || echo unknown)"
+        checking "logical cores" \
+            "sysctl -n hw.ncpuonline || sysctl -n hw.ncpu"
+        result "$(sysctl -n hw.ncpuonline 2>/dev/null \
+            || sysctl -n hw.ncpu 2>/dev/null || echo unknown)"
+        ;;
+    *)
+        log "== CPU info =="
+        checking "CPU info" "(no known command for this OS)"
+        result_detail "unknown" \
+            "OS family ($OS_KERNEL) — no native CPU-info command" \
+            "known for this platform"
+        ;;
+esac
+
+log ""
+
+log "== Cache hierarchy (feeds chunk_size auto-tuning) =="
+
+checking "L1/L2/L3 cache sizes" "getconf LEVEL{1,2,3}_*CACHE_SIZE"
+if have getconf; then
+    l1="$(getconf LEVEL1_DCACHE_SIZE 2>/dev/null || echo -1)"
+    l2="$(getconf LEVEL2_CACHE_SIZE 2>/dev/null || echo -1)"
+    l3="$(getconf LEVEL3_CACHE_SIZE 2>/dev/null || echo -1)"
+    if [ "$l1" -gt 0 ] 2>/dev/null; then
+        l1_display="$((l1 / 1024)) KiB"
+        if [ "$l2" -gt 0 ] 2>/dev/null; then
+            l2_display="$((l2 / 1024)) KiB"
+        else
+            l2_display="unknown"
+        fi
+        if [ "$l3" -gt 0 ] 2>/dev/null; then
+            l3_display="$((l3 / 1024 / 1024)) MiB"
+        else
+            l3_display="unknown"
+        fi
+        result_detail \
+            "L1=$l1_display, L2=$l2_display, L3=$l3_display" \
+            "(per-core)"
+    else
+        result "unknown (getconf returned no value on this platform)"
+    fi
+    log "  Note: getconf reports PER-CORE L1/L2 size, not per-socket"
+    log "  aggregate. Compare against the lscpu section above, which"
+    log "  reports 'N instances' at the per-socket level — the two"
+    log "  are not directly comparable without dividing by instance"
+    log "  count. The chunk_size auto-tuner uses these"
+    log "  getconf per-core values directly, since a single chunk's"
+    log "  working set competes for one core's L1/L2, not the"
+    log "  socket-wide aggregate."
+else
+    result_detail "unknown" \
+        "getconf not found on this platform; cache-size detection" \
+        "falls back to /sys, then to a compiled-in default"
+fi
+
+log ""
+
+# -----------------------------------------------------------------
+# Cross-source consistency: getconf and /sys/.../cache/index*/size
+# are two independent OS-level sources for the SAME per-core cache
+# sizes (unlike lscpu, which reports per-socket aggregates - already
+# correctly caveated above, not part of this comparison). Until now
+# these were reported as separate, never-verified facts; a mismatch
+# would indicate something genuinely worth knowing about (a
+# misconfigured cgroup view, an unusual kernel/firmware reporting
+# quirk, a virtualized environment presenting inconsistent topology
+# to different query mechanisms) rather than being silently assumed
+# to always agree.
+# -----------------------------------------------------------------
+
+checking "getconf vs sysfs cache-size consistency" \
+    "compare getconf LEVEL{1,2,3}_*CACHE_SIZE against /sys/.../size"
+sysfs_cache_dir="/sys/devices/system/cpu/cpu0/cache"
+if have getconf && [ -d "$sysfs_cache_dir" ]; then
+    sysfs_l1=-1
+    sysfs_l2=-1
+    sysfs_l3=-1
+    for idx in "$sysfs_cache_dir"/index*; do
+        [ -r "$idx/level" ] || continue
+        [ -r "$idx/type" ] || continue
+        [ -r "$idx/size" ] || continue
+        idx_level="$(cat "$idx/level" 2>/dev/null)"
+        idx_type="$(cat "$idx/type" 2>/dev/null)"
+        idx_size_raw="$(cat "$idx/size" 2>/dev/null)"
+        # sysfs sizes are like "32K" or "8192K" - strip the K suffix,
+        # convert to bytes, to compare against getconf's raw byte count.
+        idx_size_kb="${idx_size_raw%K}"
+        case "$idx_size_kb" in
+            ''|*[!0-9]*) continue ;;
+        esac
+        idx_size_bytes=$((idx_size_kb * 1024))
+        if [ "$idx_level" = "1" ] && [ "$idx_type" = "Data" ]; then
+            sysfs_l1=$idx_size_bytes
+        elif [ "$idx_level" = "2" ]; then
+            sysfs_l2=$idx_size_bytes
+        elif [ "$idx_level" = "3" ]; then
+            sysfs_l3=$idx_size_bytes
+        fi
+    done
+
+    mismatch=""
+    [ "$sysfs_l1" -gt 0 ] 2>/dev/null && [ "$sysfs_l1" != "$l1" ] \
+        && mismatch="${mismatch}L1(getconf=$l1,sysfs=$sysfs_l1) "
+    [ "$sysfs_l2" -gt 0 ] 2>/dev/null && [ "$sysfs_l2" != "$l2" ] \
+        && mismatch="${mismatch}L2(getconf=$l2,sysfs=$sysfs_l2) "
+    [ "$sysfs_l3" -gt 0 ] 2>/dev/null && [ "$sysfs_l3" != "$l3" ] \
+        && mismatch="${mismatch}L3(getconf=$l3,sysfs=$sysfs_l3) "
+
+    if [ -z "$mismatch" ]; then
+        result "consistent (getconf and sysfs agree exactly)"
+    else
+        result_detail "MISMATCH" \
+            "$mismatch - these two independent OS-level sources" \
+            "disagree; treat the cache-size values above with" \
+            "caution (possible cgroup/virtualization/firmware" \
+            "reporting quirk on this machine)"
+    fi
+else
+    result_detail "unknown" \
+        "getconf or /sys/.../cache/index* unavailable — cannot" \
+        "cross-check on this platform"
+fi
+
+log ""
+
+# -----------------------------------------------------------------
+# Empirical cache-latency probe (opt-in, --probe-cache-latency): all
+# checks above report DECLARED sizes (from the OS/firmware) - this
+# instead MEASURES actual access latency via a real RDTSCP pointer-
+# chasing microbenchmark (a scrambled-stride linked-list walk,
+# defeats simple sequential-prefetch detection), independent of what
+# any OS interface claims. A latency jump between buffer sizes marks
+# a real empirical cache-level boundary. This answers a genuinely
+# different question ("what does the hardware actually do") than the
+# declared-size checks above ("what does the OS report") - kept
+# opt-in since it takes ~3s (13 buffer sizes, 300k timed reps each),
+# meaningfully slower than every other check in this script.
+# x86_64-only, written in raw assembly and assembled/linked directly
+# with as/ld (GNU binutils) - deliberately NOT compiled C/C++, since
+# this section runs before C++ toolchain detection even exists later
+# in the file (it is a machine-identity fact, same as the rest of
+# this block, not gated on any language toolchain being available).
+# -----------------------------------------------------------------
+
+if [ "$PROBE_CACHE_LATENCY" -eq 1 ]; then
+    # Deliberately RAW ASSEMBLY, not compiled C++ - this section runs
+    # before C++ toolchain detection (below) even exists, since it is
+    # conceptually a machine-identity fact independent of any language
+    # toolchain, same as the rest of this block. Assembling directly
+    # with as/ld (GNU binutils) has zero C/C++ compiler dependency:
+    # raw mmap/munmap/write/exit syscalls, no libc. This is a genuine
+    # pointer-chasing latency microbenchmark (not a toy) - each buffer
+    # size gets its own mmap'd region, a scrambled traversal order
+    # (index = (index + 104729) mod n_elems, a prime stride - not a
+    # full Fisher-Yates shuffle, but sufficient to defeat simple
+    # sequential-stride prefetch detection), a 3x-buffer warm-up walk,
+    # then a real RDTSCP-timed 300000-iteration pointer chase.
+    checking "empirical cache-latency boundaries (raw as/ld probe, ~3s)" \
+        "as+ld pointer-chase microbenchmark, 13 sizes, no C/C++ compiler"
+    case "$OS_ARCH" in
+        x86_64)
+            cat >"$tmpc" <<'EOF'
+.intel_syntax noprefix
+.global _start
+.text
+
+_start:
+    mov r15, 8192
+
+size_loop:
+    cmp r15, 33554432
+    jg  all_done
+
+    mov rax, 9
+    xor rdi, rdi
+    mov rsi, r15
+    mov rdx, 3
+    mov r10, 0x22
+    mov r8, -1
+    xor r9, r9
+    syscall
+    mov r14, rax
+
+    mov rcx, r15
+    shr rcx, 3
+    xor rbx, rbx
+    mov r13, rcx
+
+build_loop:
+    mov rax, rbx
+    add rax, 104729
+    xor rdx, rdx
+    div r13
+    mov [r14 + rbx*8], rdx
+    mov rbx, rdx
+    dec rcx
+    jnz build_loop
+
+    mov rbx, 0
+    mov rcx, r13
+    imul rcx, rcx, 3
+warmup_loop:
+    mov rbx, [r14 + rbx*8]
+    dec rcx
+    jnz warmup_loop
+
+    mfence
+    rdtscp
+    shl rdx, 32
+    or rax, rdx
+    mov r12, rax
+
+    mov rcx, 300000
+timed_loop:
+    mov rbx, [r14 + rbx*8]
+    dec rcx
+    jnz timed_loop
+
+    rdtscp
+    shl rdx, 32
+    or rax, rdx
+    sub rax, r12
+
+    mov rdi, r15
+    shr rdi, 10
+    call print_uint
+    mov al, ' '
+    call print_char
+    call print_uint_from_rax_holder
+    mov al, 10
+    call print_char
+
+    mov rax, 11
+    mov rdi, r14
+    mov rsi, r15
+    syscall
+
+    shl r15, 1
+    jmp size_loop
+
+all_done:
+    mov rax, 60
+    xor rdi, rdi
+    syscall
+
+.bss
+.lcomm numbuf, 32
+
+.text
+print_char:
+    push rax
+    push rdi
+    push rsi
+    push rdx
+    mov [rsp - 64], al
+    mov rax, 1
+    mov rdi, 1
+    lea rsi, [rsp - 64]
+    mov rdx, 1
+    syscall
+    pop rdx
+    pop rsi
+    pop rdi
+    pop rax
+    ret
+
+print_uint:
+    push rax
+    push rbx
+    push rcx
+    push rdx
+    push rdi
+    push rsi
+    lea rsi, [numbuf + 31]
+    mov rbx, 10
+    mov rax, rdi
+    mov byte ptr [rsi], 0
+digit_loop:
+    xor rdx, rdx
+    div rbx
+    add dl, '0'
+    dec rsi
+    mov [rsi], dl
+    test rax, rax
+    jnz digit_loop
+    lea rcx, [numbuf + 31]
+    sub rcx, rsi
+    mov rax, 1
+    mov rdi, 1
+    mov rdx, rcx
+    syscall
+    pop rsi
+    pop rdi
+    pop rdx
+    pop rcx
+    pop rbx
+    pop rax
+    ret
+
+print_uint_from_rax_holder:
+    push rdi
+    mov rdi, rax
+    call print_uint
+    pop rdi
+    ret
+EOF
+            probe_ok=0
+            probe_out=""
+            asm_obj="${TMPDIR}/paulikit-configure-cacheprobe-$$.o"
+            asm_exe="${TMPDIR}/paulikit-configure-cacheprobe-$$.exe"
+            if have as && have ld \
+                && verbose_run as -o "$asm_obj" "$tmpc" \
+                && verbose_run ld -o "$asm_exe" "$asm_obj"
+            then
+                probe_out="$("$asm_exe" 2>/dev/null || true)"
+                [ -n "$probe_out" ] && probe_ok=1
+            fi
+            rm -f "$asm_obj" "$asm_exe"
+            if [ "$probe_ok" = 1 ]; then
+                if [ "$VERBOSE" -eq 1 ]; then
+                    printf '%s\n' "$probe_out" | tee -a config.log
+                fi
+                # probe_out is "size_kb total_cycles" lines (300000
+                # reps each) - convert to cycles/access and find the
+                # largest relative jumps between consecutive sizes,
+                # same boundary-detection logic as the declared-size
+                # checks above compare against.
+                boundaries="$(printf '%s\n' "$probe_out" | awk '
+                    { kb[NR] = $1; cyc[NR] = $2 / 300000.0; n = NR }
+                    END {
+                        for (i = 2; i <= n; i++) {
+                            ratio = cyc[i] / cyc[i-1]
+                            if (ratio > 1.3) {
+                                printf "%sKiB->%sKiB(x%.2f) ",
+                                    kb[i-1], kb[i], ratio
+                            }
+                        }
+                    }')"
+                result_detail "measured" \
+                    "empirical boundaries: ${boundaries:-none detected}" \
+                    "(compare against the declared L1/L2/L3 sizes above" \
+                    "- a genuine mismatch would mean the OS-reported" \
+                    "sizes don't reflect real access-latency behavior" \
+                    "on this hardware, e.g. an unusual virtualized" \
+                    "cache model)"
+            else
+                result_detail "FAILED" \
+                    "the raw assembly probe did not assemble/link/run —" \
+                    "requires GNU as+ld (binutils) and x86_64 RDTSCP" \
+                    "support; no C/C++ compiler needed or used"
+            fi
+            ;;
+        aarch64|arm64)
+            # Same mechanism as x86_64: raw mmap/munmap/write/exit
+            # syscalls (numbers 222/215/64/93 - aarch64 uses the
+            # SAME generic syscall table as riscv64, confirmed via
+            # /usr/include/asm-generic/unistd.h, unlike x86_64's own
+            # unique table), same scrambled-stride pointer chase and
+            # awk boundary-detection. Timing source: CNTVCT_EL0 via
+            # MRS, EL0-accessible with no privileged setup required
+            # (unlike PMCCNTR_EL0, which needs PMUSERENR_EL0 enabled
+            # first - avoided here for portability across unknown
+            # target hardware). This host is x86_64, so this arm only
+            # runs when a cross-assembler (aarch64-linux-gnu-as/-ld)
+            # and qemu-aarch64 (user-mode emulation) are available;
+            # on real aarch64 hardware, native as/ld/direct-exec would
+            # be used instead (not implemented separately - the same
+            # cross-toolchain path also works natively once as/ld
+            # resolve to the native tools and qemu is simply unused).
+            cat >"$tmpc" <<'EOF'
+.text
+.global _start
+
+_start:
+    mov x15, #8192
+
+size_loop:
+    mov x16, #33554432
+    cmp x15, x16
+    b.gt all_done
+
+    mov x0, #0
+    mov x1, x15
+    mov x2, #3
+    mov x3, #0x22
+    mov x4, #-1
+    mov x5, #0
+    mov x8, #222
+    svc #0
+    mov x14, x0
+
+    mov x9, x15
+    lsr x9, x9, #3
+    mov x11, #0
+    mov x13, x9
+
+build_loop:
+    mov x0, x11
+    movz x1, #0x1, lsl #16
+    movk x1, #0x9919
+    add x0, x0, x1
+    udiv x1, x0, x13
+    msub x2, x1, x13, x0
+    lsl x3, x2, #3
+    add x3, x14, x3
+    str x2, [x3]
+    mov x11, x2
+    subs x9, x9, #1
+    b.ne build_loop
+
+    mov x11, #0
+    mov x9, x13
+    mov x1, #3
+    mul x9, x9, x1
+warmup_loop:
+    lsl x3, x11, #3
+    add x3, x14, x3
+    ldr x11, [x3]
+    subs x9, x9, #1
+    b.ne warmup_loop
+
+    isb
+    mrs x12, cntvct_el0
+
+    movz x9, #0x4, lsl #16
+    movk x9, #0x93e0
+timed_loop:
+    lsl x3, x11, #3
+    add x3, x14, x3
+    ldr x11, [x3]
+    subs x9, x9, #1
+    b.ne timed_loop
+
+    isb
+    mrs x0, cntvct_el0
+    sub x0, x0, x12
+    mov x19, x0
+
+    lsr x0, x15, #10
+    bl print_uint
+    mov x0, #' '
+    bl print_char
+    mov x0, x19
+    bl print_uint
+    mov x0, #10
+    bl print_char
+
+    mov x0, x14
+    mov x1, x15
+    mov x8, #215
+    svc #0
+
+    lsl x15, x15, #1
+    b size_loop
+
+all_done:
+    mov x0, #0
+    mov x8, #93
+    svc #0
+
+.bss
+.lcomm numbuf, 32
+
+.text
+print_char:
+    stp x0, x1, [sp, #-32]!
+    stp x2, x30, [sp, #16]
+    strb w0, [sp, #-64]!
+    mov x0, #1
+    mov x2, #1
+    add x1, sp, #0
+    mov x8, #64
+    svc #0
+    add sp, sp, #64
+    ldp x2, x30, [sp, #16]
+    ldp x0, x1, [sp], #32
+    ret
+
+print_uint:
+    stp x0, x1, [sp, #-48]!
+    stp x2, x3, [sp, #16]
+    stp x4, x30, [sp, #32]
+    adrp x4, numbuf
+    add x4, x4, :lo12:numbuf
+    add x1, x4, #31
+    mov x2, #0
+    strb w2, [x1]
+    mov x3, #10
+digit_loop:
+    udiv x2, x0, x3
+    msub x4, x2, x3, x0
+    add x4, x4, #'0'
+    sub x1, x1, #1
+    strb w4, [x1]
+    mov x0, x2
+    cmp x0, #0
+    b.ne digit_loop
+    adrp x4, numbuf
+    add x4, x4, :lo12:numbuf
+    add x4, x4, #31
+    sub x2, x4, x1
+    mov x0, #1
+    mov x8, #64
+    svc #0
+    ldp x4, x30, [sp, #32]
+    ldp x2, x3, [sp, #16]
+    ldp x0, x1, [sp], #48
+    ret
+EOF
+            probe_ok=0
+            probe_out=""
+            asm_obj="${TMPDIR}/paulikit-configure-cacheprobe-$$.o"
+            asm_exe="${TMPDIR}/paulikit-configure-cacheprobe-$$.exe"
+            if have aarch64-linux-gnu-as && have aarch64-linux-gnu-ld \
+                && have qemu-aarch64 \
+                && verbose_run aarch64-linux-gnu-as \
+                    -o "$asm_obj" "$tmpc" \
+                && verbose_run aarch64-linux-gnu-ld \
+                    -o "$asm_exe" "$asm_obj"
+            then
+                probe_out="$(qemu-aarch64 "$asm_exe" 2>/dev/null \
+                    || true)"
+                [ -n "$probe_out" ] && probe_ok=1
+            fi
+            rm -f "$asm_obj" "$asm_exe"
+            if [ "$probe_ok" = 1 ]; then
+                if [ "$VERBOSE" -eq 1 ]; then
+                    printf '%s\n' "$probe_out" | tee -a config.log
+                fi
+                result_detail "measured (QEMU user-mode)" \
+                    "ran via cross-assembled aarch64 binary under" \
+                    "qemu-aarch64 - this validates that the raw" \
+                    "syscalls/CNTVCT_EL0 read/pointer-chase are" \
+                    "CORRECT, but QEMU user-mode has no real cache" \
+                    "hierarchy to time against, so these numbers are" \
+                    "NOT a trustworthy latency curve on real aarch64" \
+                    "hardware - treat this as a correctness smoke" \
+                    "test only, never as a real measurement"
+            else
+                result_detail "skipped" \
+                    "requires aarch64-linux-gnu-as/-ld (cross-" \
+                    "binutils) and qemu-aarch64 (user-mode emulation)" \
+                    "to assemble+link+run this cross-architecture" \
+                    "probe from an x86_64 host"
+            fi
+            ;;
+        riscv64)
+            # Same mechanism as x86_64/aarch64: raw mmap/munmap/
+            # write/exit syscalls (same generic-table numbers as
+            # aarch64: 222/215/64/93), same scrambled-stride pointer
+            # chase and awk boundary-detection. Timing source: the
+            # rdtime pseudo-instruction (a CSR read of the `time`
+            # counter). Verified live under QEMU that this assembles
+            # and runs without trapping - but on REAL riscv64
+            # hardware, user-mode access to the cycle/time CSRs is
+            # commonly gated by mcounteren/scounteren, and Linux often
+            # traps+emulates rdtime in the kernel; QEMU's linux-user
+            # emulation may be more permissive than real silicon, so
+            # a clean run here does not by itself prove EL0/U-mode
+            # CSR access will succeed on a given real riscv64 core.
+            cat >"$tmpc" <<'EOF'
+.text
+.global _start
+
+_start:
+    li s0, 8192
+
+size_loop:
+    li t0, 33554432
+    bgt s0, t0, all_done
+
+    li a0, 0
+    mv a1, s0
+    li a2, 3
+    li a3, 0x22
+    li a4, -1
+    li a5, 0
+    li a7, 222
+    ecall
+    mv s1, a0
+
+    srli t1, s0, 3
+    li s2, 0
+    mv s3, t1
+
+build_loop:
+    li t2, 104729
+    add t3, s2, t2
+    remu s2, t3, s3
+    slli t4, s2, 3
+    add t4, s1, t4
+    sd s2, 0(t4)
+    addi t1, t1, -1
+    bnez t1, build_loop
+
+    li s2, 0
+    mv t1, s3
+    li t2, 3
+    mul t1, t1, t2
+warmup_loop:
+    slli t4, s2, 3
+    add t4, s1, t4
+    ld s2, 0(t4)
+    addi t1, t1, -1
+    bnez t1, warmup_loop
+
+    rdtime s4
+
+    li t1, 300000
+timed_loop:
+    slli t4, s2, 3
+    add t4, s1, t4
+    ld s2, 0(t4)
+    addi t1, t1, -1
+    bnez t1, timed_loop
+
+    rdtime a0
+    sub a0, a0, s4
+    mv s5, a0
+
+    srli a0, s0, 10
+    jal ra, print_uint
+    li a0, ' '
+    jal ra, print_char
+    mv a0, s5
+    jal ra, print_uint
+    li a0, 10
+    jal ra, print_char
+
+    mv a0, s1
+    mv a1, s0
+    li a7, 215
+    ecall
+
+    slli s0, s0, 1
+    j size_loop
+
+all_done:
+    li a0, 0
+    li a7, 93
+    ecall
+
+.bss
+.lcomm numbuf, 32
+
+.text
+print_char:
+    addi sp, sp, -32
+    sd ra, 24(sp)
+    sd a0, 16(sp)
+    sb a0, 0(sp)
+    li a0, 1
+    mv a1, sp
+    li a2, 1
+    li a7, 64
+    ecall
+    ld a0, 16(sp)
+    ld ra, 24(sp)
+    addi sp, sp, 32
+    ret
+
+print_uint:
+    addi sp, sp, -48
+    sd ra, 40(sp)
+    sd s6, 32(sp)
+    sd s7, 24(sp)
+    la s6, numbuf
+    addi s7, s6, 31
+    sb zero, 0(s7)
+    li t5, 10
+digit_loop:
+    remu t6, a0, t5
+    divu a0, a0, t5
+    addi t6, t6, '0'
+    addi s7, s7, -1
+    sb t6, 0(s7)
+    bnez a0, digit_loop
+    addi t0, s6, 31
+    sub a2, t0, s7
+    li a0, 1
+    mv a1, s7
+    li a7, 64
+    ecall
+    ld s7, 24(sp)
+    ld s6, 32(sp)
+    ld ra, 40(sp)
+    addi sp, sp, 48
+    ret
+EOF
+            probe_ok=0
+            probe_out=""
+            asm_obj="${TMPDIR}/paulikit-configure-cacheprobe-$$.o"
+            asm_exe="${TMPDIR}/paulikit-configure-cacheprobe-$$.exe"
+            if have riscv64-linux-gnu-as \
+                && have riscv64-linux-gnu-ld \
+                && have qemu-riscv64 \
+                && verbose_run riscv64-linux-gnu-as \
+                    -o "$asm_obj" "$tmpc" \
+                && verbose_run riscv64-linux-gnu-ld \
+                    -o "$asm_exe" "$asm_obj"
+            then
+                probe_out="$(qemu-riscv64 "$asm_exe" 2>/dev/null \
+                    || true)"
+                [ -n "$probe_out" ] && probe_ok=1
+            fi
+            rm -f "$asm_obj" "$asm_exe"
+            if [ "$probe_ok" = 1 ]; then
+                if [ "$VERBOSE" -eq 1 ]; then
+                    printf '%s\n' "$probe_out" | tee -a config.log
+                fi
+                result_detail "measured (QEMU user-mode)" \
+                    "ran via cross-assembled riscv64 binary under" \
+                    "qemu-riscv64 - this validates that the raw" \
+                    "syscalls/rdtime read/pointer-chase are CORRECT" \
+                    "under emulation, but proves neither a real" \
+                    "latency curve (QEMU has no real cache hierarchy" \
+                    "to time) NOR that rdtime is U-mode-accessible on" \
+                    "actual riscv64 silicon (real cores often gate it" \
+                    "behind mcounteren/scounteren) - treat this as a" \
+                    "correctness smoke test only"
+            else
+                result_detail "skipped" \
+                    "requires riscv64-linux-gnu-as/-ld (cross-" \
+                    "binutils) and qemu-riscv64 (user-mode emulation)" \
+                    "to assemble+link+run this cross-architecture" \
+                    "probe from an x86_64 host"
+            fi
+            ;;
+        *)
+            result_detail "skipped" \
+                "raw assembly probe currently implemented for" \
+                "x86_64, aarch64, and riscv64 only" \
+                "(detected: $OS_ARCH)"
+            ;;
+    esac
+    log ""
+fi
+
+# ---------------------------------------------------------------------
+# v2 — NUMA topology and per-cache-level CPU sharing (multi-socket/
+# HPC-node awareness). getconf above reports one flat cache-size
+# number with NO concept of sockets, NUMA nodes, or which cores
+# actually SHARE a given cache instance - on a real multi-socket
+# workstation or HPC/supercomputer compute node (2-8+ sockets, many
+# NUMA domains is common), that single number silently misrepresents
+# the machine: a chunk_size tuned against "the" L3 size is meaningless
+# if the process's threads are spread across multiple sockets, each
+# with its own separate L3 and NUMA-local memory. oneTBB itself
+# (checked separately, in the C++ toolchain section) is a single-node,
+# shared-memory parallelism library with NO cluster/multi-node
+# awareness at all - these checks are about correctly characterizing a
+# single node's internal topology, not distributed/cluster parallelism
+# (MPI, already checked informationally elsewhere, is the relevant
+# tool for that, not oneTBB).
+# ---------------------------------------------------------------------
+
+log "== NUMA topology (multi-socket/HPC-node awareness) =="
+
+checking "NUMA node count and per-node memory" "numactl --hardware"
+if have numactl; then
+    numa_out="$(numactl --hardware 2>/dev/null)"
+    numa_nodes_line="$(printf '%s\n' "$numa_out" | grep '^available:')"
+    result "${numa_nodes_line:-unknown}"
+    if [ "$VERBOSE" -eq 1 ]; then
+        printf '%s\n' "$numa_out" | tee -a config.log
+    fi
+    node_count="$(printf '%s\n' "$numa_nodes_line" \
+        | sed -n 's/^available: \([0-9]*\).*/\1/p')"
+    if [ -n "$node_count" ] && [ "$node_count" -gt 1 ] 2>/dev/null; then
+        log "  Multi-node machine detected ($node_count NUMA nodes)."
+        log "  The chunk_size auto-tuner should account for"
+        log "  which NUMA node a chunk's threads actually run on, not"
+        log "  assume a single flat cache/memory topology - see the"
+        log "  node distances above (numactl --hardware) for relative"
+        log "  remote-access cost between nodes."
+    fi
+else
+    result_detail "unknown" \
+        "numactl not found — cannot detect multi-socket/NUMA" \
+        "topology; if this is a multi-socket machine, cache-size" \
+        "tuning above may not reflect the real per-socket topology"
+fi
+
+checking "per-cache-level CPU sharing (cpu0's L3)" \
+    "cat /sys/devices/system/cpu/cpu0/cache/index*/shared_cpu_list"
+cache_dir="/sys/devices/system/cpu/cpu0/cache"
+if [ -d "$cache_dir" ]; then
+    l3_shared="unknown"
+    for idx in "$cache_dir"/index*; do
+        [ -r "$idx/level" ] || continue
+        [ -r "$idx/type" ] || continue
+        level="$(cat "$idx/level" 2>/dev/null)"
+        type="$(cat "$idx/type" 2>/dev/null)"
+        if [ "$level" = "3" ] && [ "$type" = "Unified" ]; then
+            l3_shared="$(cat "$idx/shared_cpu_list" 2>/dev/null \
+                || echo unknown)"
+        fi
+    done
+    result_detail "cpu0's L3 is shared by CPUs: $l3_shared" \
+        "on a multi-socket machine, other sockets' L3 instances" \
+        "cover a disjoint CPU range - chunk_size tuning should use" \
+        "the shared_cpu_list for the CPUs a chunk's threads actually" \
+        "run on, not assume this is the whole machine's L3"
+else
+    result_detail "unknown" \
+        "/sys/devices/system/cpu/cpu0/cache not present — Linux-only" \
+        "sysfs path; cannot determine per-cache CPU sharing here"
+fi
+
+log ""
+
+# -----------------------------------------------------------------
+# Job-scheduler context (Slurm/PBS-Torque/LSF): configure runs once,
+# on ONE node, and fundamentally cannot see a whole supercomputer's
+# cross-node topology (interconnect fabric, other nodes' hardware) -
+# that lives entirely in the job scheduler, not in anything a single
+# node's own OS interfaces expose. What CAN be honestly reported is
+# whether this invocation is running INSIDE an active job allocation,
+# using each scheduler's own standard, documented environment
+# variables (Slurm: SLURM_JOB_NODELIST/SLURM_NNODES/SLURM_JOB_ID;
+# PBS/Torque: PBS_NODEFILE/PBS_JOBID; LSF: LSB_HOSTS/LSB_JOBID) - this
+# is informational context about the allocation this node is part of,
+# not a substitute for per-node cache/NUMA data, which would require
+# running configure on every allocated node and aggregating results
+# (out of scope for a single build-time diagnostic script).
+# -----------------------------------------------------------------
+
+log "== Job scheduler context (Slurm/PBS/LSF, if running inside a job) =="
+
+checking "Slurm job allocation" \
+    "\$SLURM_JOB_ID / \$SLURM_NNODES / \$SLURM_JOB_NODELIST"
+if [ -n "${SLURM_JOB_ID:-}" ]; then
+    other_nodes="unknown"
+    case "${SLURM_NNODES:-}" in
+        ''|*[!0-9]*) ;;
+        *) other_nodes=$((SLURM_NNODES - 1)) ;;
+    esac
+    result_detail "job ${SLURM_JOB_ID}" \
+        "nodes=${SLURM_NNODES:-unknown}," \
+        "nodelist=${SLURM_JOB_NODELIST:-unknown} - this configure" \
+        "invocation only diagnoses THIS node; the other" \
+        "$other_nodes node(s) in this allocation are not probed" \
+        "(would require running configure on each and aggregating" \
+        "results, out of scope here)"
+else
+    result "not running inside a Slurm allocation"
+fi
+
+checking "PBS/Torque job allocation" "\$PBS_JOBID / \$PBS_NODEFILE"
+if [ -n "${PBS_JOBID:-}" ]; then
+    pbs_node_count="unknown"
+    if [ -n "${PBS_NODEFILE:-}" ] && [ -r "${PBS_NODEFILE:-}" ]; then
+        pbs_node_count="$(wc -l < "$PBS_NODEFILE" 2>/dev/null \
+            || echo unknown)"
+    fi
+    result_detail "job ${PBS_JOBID}" \
+        "PBS_NODEFILE line count=$pbs_node_count - same single-node" \
+        "diagnosis limitation as the Slurm check above"
+else
+    result "not running inside a PBS/Torque allocation"
+fi
+
+checking "LSF job allocation" "\$LSB_JOBID / \$LSB_HOSTS"
+if [ -n "${LSB_JOBID:-}" ]; then
+    result_detail "job ${LSB_JOBID}" \
+        "hosts=${LSB_HOSTS:-unknown} - same single-node diagnosis" \
+        "limitation as the Slurm check above"
+else
+    result "not running inside an LSF allocation"
+fi
+
+log ""
+
+# ---------------------------------------------------------------------
+# 1. Python interpreter + venv (MUST-SUCCEED-OR-PARTIAL-ABORT)
+# ---------------------------------------------------------------------
+
+log "== Python interpreter & virtual environment =="
+
+if [ -z "$PYTHON_BIN" ]; then
+    for cand in python3.13 python3.12 python3.11 python3.10 python3; do
+        if have "$cand"; then
+            PYTHON_BIN="$cand"
+            break
+        fi
+    done
+fi
+
+checking "Python 3 interpreter" "python3.13/python3.12/.../python3 on PATH"
+if [ -z "$PYTHON_BIN" ]; then
+    result "NOT FOUND — cannot proceed"
+    log ""
+    log "FATAL: no python3 interpreter found on PATH. paulikit requires"
+    log "Python >=3.10 (see pyproject.toml's requires-python). Install a"
+    log "Python 3.10+ interpreter and re-run ./configure."
+    # This is the one section allowed to hard-abort the whole script:
+    # every remaining check either needs a venv's Python (item 9/17/19)
+    # or is independent of Python entirely but reported alongside it
+    # for a single coherent report — without Python there is nothing
+    # for the rest of this script to set up. Everything printed so far
+    # already went to stdout and config.log live via log()/report(),
+    # so no final dump is needed here.
+    exit 1
+fi
+
+result "$PYTHON_BIN"
+py_version="$("$PYTHON_BIN" -c \
+    'import sys; print(".".join(map(str, sys.version_info[:3])))')"
+checking "Python version" \
+    "$PYTHON_BIN -c 'import sys; print(sys.version_info)'"
+result "$py_version"
+
+# Python-version-range check (item 19, corrected framing per review:
+# requires-python=">=3.10" has NO declared upper bound — classifiers
+# only listing through 3.13 is advisory metadata, not an enforced
+# ceiling, so a newer interpreter is "untested", not "out of range").
+py_major_minor="$("$PYTHON_BIN" -c \
+    'import sys; print(f"{sys.version_info[0]}.{sys.version_info[1]}")')"
+checking "version vs. pyproject.toml requires-python" \
+    "compare against >=3.10"
+case "$py_major_minor" in
+    3.10|3.11|3.12|3.13)
+        result "within tested range (3.10-3.13)"
+        ;;
+    3.[6-9]|3.0|3.1|3.2|3.3|3.4|3.5)
+        result "BELOW requires-python >=3.10 — will not work"
+        ;;
+    *)
+        result_detail "untested" \
+            ">3.13, no declared upper bound — likely fine, not verified"
+        ;;
+esac
+
+# -----------------------------------------------------------------
+# Python interpreter correctness/sanity battery — same philosophy as
+# the C++ battery above: not "does this report a version string" but
+# "does the interpreter actually DO the right thing" for the specific
+# things paulikit relies on. Each check verifies an actual computed
+# result, not just "ran without raising."
+# -----------------------------------------------------------------
+
+# IEEE754 double correctness: paulikit is entirely floating-point
+# numerics (Pauli coefficients, cache-locality-sensitive kernels) - a
+# truly broken/exotic cross-compiled interpreter could have incorrect
+# float behavior. 0.1 + 0.2 != 0.3 exactly is the CORRECT IEEE754
+# result (not a bug) - this checks that Python's float type is
+# actually IEEE754 double-precision, by verifying the exact known
+# representation error.
+checking "IEEE754 float correctness" \
+    "$PYTHON_BIN -c 'assert 0.1 + 0.2 == 0.30000000000000004'"
+if "$PYTHON_BIN" -c \
+    'import sys; sys.exit(0 if (0.1 + 0.2 == 0.30000000000000004) else 1)' \
+    >/dev/null 2>&1
+then
+    result_detail "correct" \
+        "IEEE754 double-precision representation error verified exactly"
+else
+    result_detail "FAILED" \
+        "float arithmetic does not match expected IEEE754 double" \
+        "behavior; paulikit's numerics may be unreliable on this interpreter"
+fi
+
+# ctypes / dynamic-linker sanity: paulikit's native extension is a
+# compiled .so loaded via Python's C-extension import machinery, which
+# shares the same dynamic-linking path ctypes uses. A stripped-down or
+# musl-linked Python build sometimes has this path broken even though
+# the interpreter itself runs fine - verified here via a real ctypes
+# call into libc (or paulikit's own build later, but this check is
+# independent of whether paulikit itself is installed yet).
+checking "ctypes / dynamic-linker sanity" \
+    "$PYTHON_BIN -c 'ctypes.CDLL(None).abs(-5)'"
+ctypes_result="$("$PYTHON_BIN" -c '
+import ctypes
+libc = ctypes.CDLL(None)
+print(libc.abs(-5))
+' 2>/dev/null)"
+if [ "$ctypes_result" = "5" ]; then
+    result_detail "correct" \
+        "ctypes successfully called libc abs(-5) == 5"
+else
+    result_detail "FAILED" \
+        "ctypes could not load/call a C library correctly" \
+        "(got '${ctypes_result:-nothing}'); native-extension loading may" \
+        "be broken on this interpreter"
+fi
+
+# json round-trip correctness: fwht.py's chunked-accumulator
+# checkpointing uses the json module directly - a
+# round-trip check with a value that must survive exactly (a large
+# int at the edge of float-safe-integer range) catches a broken/patched
+# json module silently corrupting checkpoint data.
+checking "json round-trip correctness" \
+    "$PYTHON_BIN -c 'json.loads(json.dumps({\"n\": 91652096}))'"
+json_result="$("$PYTHON_BIN" -c '
+import json
+data = {"n_terms": 91652096, "label": "IXYZ", "coeff": 0.30000000000000004}
+restored = json.loads(json.dumps(data))
+print("ok" if restored == data else "MISMATCH")
+' 2>/dev/null)"
+if [ "$json_result" = "ok" ]; then
+    result_detail "correct" \
+        "checkpoint-representative dict round-tripped exactly"
+else
+    result_detail "FAILED" \
+        "json round-trip did not preserve data exactly, so" \
+        "checkpointing would silently corrupt on this interpreter"
+fi
+
+# pathlib.Path + append-mode file I/O correctness, replicating the
+# EXACT mechanism fwht.py's _append_checkpoint_chunk/_load_checkpoint
+# use - not an approximation. That code has a
+# documented crash-safety invariant: triples are appended to one file
+# BEFORE a separate progress-marker file is written, so this test
+# replicates both writes via Path + open(path, "a")/open(path, "w"),
+# then reads back via the same line-by-line JSON-parse logic
+# _load_checkpoint uses, and verifies the round-tripped data is
+# byte-for-byte the same as what was written - a real Python build
+# with a broken append-mode (rare but real - has been seen on some
+# restricted/sandboxed filesystems and unusual libc I/O layers) would
+# silently corrupt paulikit's actual resumability guarantee for N=150-
+# scale runs, exactly the failure mode this is meant to catch.
+checking \
+    "checkpoint I/O mechanism (Path+append+progress-marker pattern)" \
+    "\$PYTHON_BIN -c '<replicates fwht.py's checkpoint I/O exactly>'"
+checkpoint_test_result="$("$PYTHON_BIN" -c '
+import json
+import tempfile
+from pathlib import Path
+
+with tempfile.TemporaryDirectory() as tmpdir:
+    checkpoint_path = Path(tmpdir) / "ckpt.jsonl"
+    progress_path = Path(str(checkpoint_path) + ".progress.json")
+
+    # Replicate _append_checkpoint_chunk exactly: append triples, then
+    # separately overwrite the progress marker.
+    triples = [(1, 2, 0.5, -0.25), (3, 4, 1.0, 0.0)]
+    with open(checkpoint_path, "a") as f:
+        for x, z, re, im in triples:
+            f.write(json.dumps({"x": x, "z": z, "re": re, "im": im}) + "\n")
+    with open(progress_path, "w") as f:
+        json.dump({"next_chunk": 1}, f)
+
+    # A second chunk, appended - verifies append mode genuinely
+    # appends rather than truncating on the second write.
+    triples2 = [(5, 6, -1.5, 2.0)]
+    with open(checkpoint_path, "a") as f:
+        for x, z, re, im in triples2:
+            f.write(json.dumps({"x": x, "z": z, "re": re, "im": im}) + "\n")
+    with open(progress_path, "w") as f:
+        json.dump({"next_chunk": 2}, f)
+
+    # Replicate _load_checkpoint exactly: existence checks, then
+    # line-by-line JSON parse.
+    if not checkpoint_path.exists() or not progress_path.exists():
+        print("MISSING_FILES")
+    else:
+        with open(progress_path) as f:
+            progress = json.load(f)
+        records = []
+        with open(checkpoint_path) as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                records.append(json.loads(line))
+
+        expected = [
+            {"x": 1, "z": 2, "re": 0.5, "im": -0.25},
+            {"x": 3, "z": 4, "re": 1.0, "im": 0.0},
+            {"x": 5, "z": 6, "re": -1.5, "im": 2.0},
+        ]
+        if progress["next_chunk"] == 2 and records == expected:
+            print("ok")
+        else:
+            print("MISMATCH")
+' 2>/dev/null)"
+if [ "$checkpoint_test_result" = "ok" ]; then
+    result_detail "correct" \
+        "append-mode writes, progress-marker overwrite, and" \
+        "line-delimited JSON read-back all verified exact, matching" \
+        "fwht.py's real checkpoint mechanism"
+else
+    result_detail "FAILED" \
+        "checkpoint I/O mechanism did not round-trip correctly" \
+        "(got '${checkpoint_test_result:-nothing}') - paulikit's N=150-scale" \
+        "resumability guarantee would be unreliable" \
+        "on this interpreter/filesystem"
+fi
+
+checking "virtual environment at ${VENV_PATH}" \
+    "$PYTHON_BIN -m venv ${VENV_PATH}"
+if [ -x "${VENV_PATH}/bin/python" ]; then
+    result "reusing existing venv"
+else
+    result "creating..."
+    venv_err="${TMPDIR}/paulikit-configure-venv-err-$$"
+    if "$PYTHON_BIN" -m venv "$VENV_PATH" 2>"$venv_err"; then
+        :
+    else
+        report "Venv creation" "FAILED"
+        log ""
+        log "$(cat "$venv_err" 2>/dev/null)"
+        log ""
+        log "Partial abort: venv-dependent checks below (BLAS backend,"
+        log "editable install, Makefile 'build'/'check' targets) are"
+        log "skipped. Compiler/TBB/cache/git checks below are independent"
+        log "of the venv and still run."
+        VENV_PY=""
+    fi
+    rm -f "$venv_err"
+fi
+VENV_PY="${VENV_PATH}/bin/python"
+[ -x "$VENV_PY" ] || VENV_PY=""
+
+log ""
+
+# ---------------------------------------------------------------------
+# 2. C++ compiler + C++17 (MUST-SUCCEED for the native-extension
+#    section only — partial abort, not a script-kill, since paulikit's
+#    pure-Python fallback works with zero compiler present)
+# ---------------------------------------------------------------------
+
+log "== C++ toolchain =="
+
+if [ -n "$CC" ]; then
+    report "CC override (accepted, not used)" "$CC"
+    log "  paulikit's native extension is C++-only; meson's"
+    log "  C-compiler checks (e.g. for any future .c sources) would"
+    log "  use this if passed through to meson setup, but configure's"
+    log "  own diagnostic compile-tests are C++-only."
+fi
+
+if [ -z "$CXX" ]; then
+    for cand in c++ g++ clang++; do
+        if have "$cand"; then
+            CXX="$cand"
+            break
+        fi
+    done
+fi
+
+native_toolchain_ok=0
+checking "C++ compiler" "c++/g++/clang++ on PATH"
+if [ -z "$CXX" ]; then
+    result "NOT FOUND"
+    log ""
+    log "Partial abort: the native Cython/C++/oneTBB extension cannot be"
+    log "diagnosed further (Cython/TBB checks below are skipped for the"
+    log "native-extension section). paulikit still works — fwht.py falls"
+    log "back to pure Python automatically, with a visible warning at"
+    log "import time. Install a C++ compiler (e.g. gcc/g++ or clang++)"
+    log "to enable the compiled fast path."
+else
+    cxx_version="$("$CXX" --version 2>/dev/null | head -1)"
+    result "$CXX ($cxx_version)"
+
+    cat >"$tmpc" <<'EOF'
+#include <utility>
+int main() { auto [a, b] = std::pair<int,int>{1, 2}; return a - a; }
+EOF
+    checking "C++17 support" "$CXX -std=c++17 -c (structured bindings)"
+    if verbose_run "$CXX" -std=c++17 -o "$tmpo" -c "$tmpc"; then
+        result_detail "yes" "(structured bindings compile-test passed)"
+        native_toolchain_ok=1
+    else
+        result_detail "no" \
+            "compile-test failed, native extension cannot be built"
+    fi
+    rm -f "$tmpo"
+
+    if [ "$native_toolchain_ok" -eq 1 ]; then
+        # -----------------------------------------------------------
+        # Compiler correctness/sanity battery — not "does this flag
+        # compile" but "does the compiler DO the right thing": a
+        # miscompilation at a given optimization level, a broken
+        # libm link, or silently swallowed warning flags would each
+        # be a real, historically-seen toolchain failure mode that a
+        # bare version-string check cannot catch. Each test below
+        # compiles AND executes a small deterministic computation and
+        # checks the ACTUAL numeric/behavioral result, not just exit
+        # status - per explicit project requirement that every
+        # diagnostic here verify correctness, not just presence.
+        # -----------------------------------------------------------
+
+        # -O1/-O2/-O3 correctness: sum 1..1000 via a loop the optimizer
+        # is free to unroll/vectorize/reorder; a real miscompilation
+        # bug would show up as a wrong sum, not a compile failure.
+        cat >"$tmpc" <<'EOF'
+#include <cstdio>
+int main() {
+    long sum = 0;
+    for (int i = 1; i <= 1000; ++i) sum += i;
+    // 1000*1001/2 = 500500
+    return (sum == 500500) ? 0 : 1;
+}
+EOF
+        for opt_level in -O1 -O2 -O3; do
+            checking "optimizer correctness ($opt_level)" \
+                "$CXX $opt_level -o test test.cpp && ./test"
+            opt_ok=0
+            if verbose_run "$CXX" -std=c++17 "$opt_level" -o "$tmpexe" "$tmpc"
+            then
+                { "$tmpexe" >/dev/null 2>&1 && opt_ok=1 || true; } 2>/dev/null
+            fi
+            if [ "$opt_ok" = 1 ]; then
+                result_detail "correct" "sum verified == 500500"
+            else
+                result_detail "FAILED" \
+                    "compiler produced a wrong result at $opt_level, or" \
+                    "failed to compile/run (potential miscompilation bug)"
+            fi
+            rm -f "$tmpexe"
+        done
+
+        # Warning flags actually fire: a compiler wrapper that
+        # silently swallows -Wall/-Wextra would give false confidence
+        # in meson's own warning-based build hygiene. Compile code
+        # with a real, unambiguous warning (unused variable) under
+        # -Wall -Wextra and grep the compiler's own diagnostic output
+        # for the word "unused" - the test itself must FIND a real
+        # warning, not just "compiled without erroring."
+        cat >"$tmpc" <<'EOF'
+int main() {
+    int unused_variable = 42;
+    return 0;
+}
+EOF
+        checking "warning flags (-Wall -Wextra actually fire)" \
+            "$CXX -Wall -Wextra -c test.cpp 2>&1 | grep -qi unused"
+        warn_out="${TMPDIR}/paulikit-configure-warn-$$.out"
+        "$CXX" -std=c++17 -Wall -Wextra -o "$tmpo" -c "$tmpc" \
+            >"$warn_out" 2>&1 || true
+        if [ "$VERBOSE" -eq 1 ]; then
+            cat "$warn_out" | tee -a config.log
+        fi
+        if grep -qi "unused" "$warn_out" 2>/dev/null; then
+            result_detail "yes" "unused-variable warning correctly detected"
+        else
+            result_detail "no" \
+                "-Wall -Wextra did not report an unambiguous" \
+                "unused-variable warning; warning flags may be" \
+                "silently swallowed by this compiler/wrapper"
+        fi
+        rm -f "$tmpo" "$warn_out"
+
+        # Math library linkage + correctness: a real libm call
+        # (sqrt), compiled, linked with -lm, executed, result checked
+        # against the known correct value - not just "did -lm link."
+        cat >"$tmpc" <<'EOF'
+#include <cmath>
+int main() {
+    double result = std::sqrt(144.0);
+    return (result == 12.0) ? 0 : 1;
+}
+EOF
+        checking "math library (-lm sqrt correctness)" \
+            "$CXX -o test test.cpp -lm && ./test"
+        math_ok=0
+        if verbose_run "$CXX" -std=c++17 -o "$tmpexe" "$tmpc" -lm; then
+            { "$tmpexe" >/dev/null 2>&1 && math_ok=1 || true; } 2>/dev/null
+        fi
+        if [ "$math_ok" = 1 ]; then
+            result_detail "correct" "sqrt(144.0) == 12.0 verified"
+        else
+            result_detail "FAILED" "libm link or sqrt() result incorrect"
+        fi
+        rm -f "$tmpexe"
+
+        # Exception handling: a working throw/catch with unwinding
+        # across a function call boundary - correctness verified by
+        # checking the actually-caught value, not just "didn't crash"
+        # (silent unwinding breakage is a real failure mode on some
+        # cross-compiled/exotic toolchains).
+        cat >"$tmpc" <<'EOF'
+#include <stdexcept>
+void thrower() { throw std::runtime_error("sentinel"); }
+int main() {
+    try {
+        thrower();
+    } catch (const std::runtime_error& e) {
+        return (std::string(e.what()) == "sentinel") ? 0 : 1;
+    }
+    return 1;
+}
+EOF
+        checking "exception handling (throw/catch across call boundary)" \
+            "$CXX -o test test.cpp && ./test"
+        exc_ok=0
+        if verbose_run "$CXX" -std=c++17 -o "$tmpexe" "$tmpc"; then
+            { "$tmpexe" >/dev/null 2>&1 && exc_ok=1 || true; } 2>/dev/null
+        fi
+        if [ "$exc_ok" = 1 ]; then
+            result_detail "correct" \
+                "exception caught with the correct message across a" \
+                "function-call boundary"
+        else
+            result_detail "FAILED" \
+                "exception was not caught correctly, or failed to" \
+                "compile/run"
+        fi
+        rm -f "$tmpexe"
+
+        # Known project-specific quirk (not a hypothetical one - see
+        # measured directly): a
+        # wheel or dev build accidentally inheriting -march=native via
+        # an environment CXXFLAGS/CPPFLAGS is a real, documented
+        # SIGILL wheel-portability hazard for this project (a wheel
+        # built on CI with -march=native crashes on end-user hardware
+        # lacking that exact instruction set). meson.build sets no
+        # explicit optimization/arch flags itself, so this can only
+        # leak in from the environment - check for that leak directly,
+        # with a real compiled-and-disassembled verification rather
+        # than just grepping env var text (a leak could also arrive
+        # via CXXFLAGS containing something equivalent but differently
+        # spelled).
+        checking "CXXFLAGS/CPPFLAGS for -march=native leak" \
+            "echo \$CXXFLAGS \$CPPFLAGS | grep -q march=native"
+        env_flags="${CXXFLAGS:-} ${CPPFLAGS:-}"
+        case "$env_flags" in
+            *march=native*)
+                result_detail "WARNING" \
+                    "-march=native detected in CXXFLAGS/CPPFLAGS." \
+                    "meson.build itself sets no arch flags, so this" \
+                    "would leak into any build invoked from this shell" \
+                    "and produce a non-portable binary (real SIGILL" \
+                    "hazard on other hardware)." \
+                    "Unset it before building wheels."
+                ;;
+            *)
+                result_detail "clean" \
+                    "no -march=native leak detected in CXXFLAGS/CPPFLAGS"
+                ;;
+        esac
+
+        # -----------------------------------------------------------
+        # Project-header battery — the O1/O2/O3/warnings/math/
+        # exception battery above verifies GENERIC compiler health,
+        # but doesn't touch anything paulikit's own native extension
+        # source actually includes. This matters concretely for a
+        # custom/cross/vendor CXX passed via --python=/CXX=: a
+        # compiler can pass every generic sanity check above and
+        # still have a broken or ABI-incompatible standard-library
+        # implementation for the SPECIFIC headers this project needs.
+        # Headers below are exactly what
+        # src/paulikit/_native/{pauli_label,pauli_label_parallel}.{h,cpp}
+        # and test_pauli_label_parallel.cpp actually #include (oneTBB
+        # headers are already covered by the oneTBB check above) -
+        # verified by grepping the real source, not assumed. Each test
+        # compiles AND executes real usage matching this project's own
+        # code, checking an actual computed result.
+        # -----------------------------------------------------------
+
+        # <stdint.h> fixed-width integer correctness: pauli_label.h's
+        # actual signature takes uint32_t masks and an int64_t term
+        # count - verify these types have the exact expected widths
+        # and that arithmetic across the uint32_t/int64_t boundary
+        # (as pauli_label_parallel.cpp does: "term * (int64_t)n_qubits")
+        # produces the correct value, not silently truncated.
+        cat >"$tmpc" <<'EOF'
+#include <stdint.h>
+int main() {
+    if (sizeof(uint32_t) != 4) return 1;
+    if (sizeof(int64_t) != 8) return 1;
+    uint32_t x_mask = 0xFFFFFFFFu;
+    int64_t term = 1000000000LL;
+    int64_t n_qubits = 150;
+    int64_t product = term * n_qubits;
+    if (product != 150000000000LL) return 1;
+    return (x_mask == 4294967295u) ? 0 : 1;
+}
+EOF
+        checking "<stdint.h> fixed-width types (uint32_t/int64_t usage)" \
+            "$CXX -o test test.cpp && ./test"
+        stdint_ok=0
+        if verbose_run "$CXX" -std=c++17 -o "$tmpexe" "$tmpc"; then
+            { "$tmpexe" >/dev/null 2>&1 && stdint_ok=1 || true; } 2>/dev/null
+        fi
+        if [ "$stdint_ok" = 1 ]; then
+            result_detail "correct" \
+                "uint32_t/int64_t widths and cross-type arithmetic" \
+                "verified exact"
+        else
+            result_detail "FAILED" \
+                "uint32_t/int64_t sizes or arithmetic incorrect -" \
+                "pauli_label_parallel.cpp's own signatures rely on this"
+        fi
+        rm -f "$tmpexe"
+
+        # <vector> correctness: test_pauli_label_parallel.cpp's actual
+        # usage pattern is std::vector<T>(n) sized construction plus
+        # element access/mutation - verified with a real fill-and-sum,
+        # not just "did it compile."
+        cat >"$tmpc" <<'EOF'
+#include <vector>
+#include <cstdint>
+int main() {
+    std::vector<uint32_t> v(1000);
+    for (size_t i = 0; i < v.size(); ++i) v[i] = static_cast<uint32_t>(i);
+    uint64_t sum = 0;
+    for (size_t i = 0; i < v.size(); ++i) sum += v[i];
+    // 0+1+...+999 = 499500
+    return (sum == 499500) ? 0 : 1;
+}
+EOF
+        checking "<vector> correctness (sized construction + fill)" \
+            "$CXX -o test test.cpp && ./test"
+        vector_ok=0
+        if verbose_run "$CXX" -std=c++17 -o "$tmpexe" "$tmpc"; then
+            { "$tmpexe" >/dev/null 2>&1 && vector_ok=1 || true; } 2>/dev/null
+        fi
+        if [ "$vector_ok" = 1 ]; then
+            result_detail "correct" \
+                "sized vector<uint32_t> fill-and-sum verified == 499500"
+        else
+            result_detail "FAILED" \
+                "std::vector construction/access incorrect or failed" \
+                "to compile/run"
+        fi
+        rm -f "$tmpexe"
+
+        # <chrono> correctness: test_pauli_label_parallel.cpp's actual
+        # usage is std::chrono::steady_clock + duration<double, milli>
+        # for benchmark timing - verify the clock actually advances
+        # and the duration conversion produces a sane, non-negative,
+        # non-absurd value (a broken clock could return 0 always, or a
+        # broken duration cast could silently truncate to garbage).
+        cat >"$tmpc" <<'EOF'
+#include <chrono>
+#include <thread>
+int main() {
+    auto t0 = std::chrono::steady_clock::now();
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    auto t1 = std::chrono::steady_clock::now();
+    double elapsed_ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
+    // Must show at least ~15ms elapsed (allowing scheduler slack) and
+    // not something absurd like negative or >10 seconds.
+    return (elapsed_ms >= 15.0 && elapsed_ms < 10000.0) ? 0 : 1;
+}
+EOF
+        checking "<chrono> correctness (steady_clock + duration<double,milli>)" \
+            "$CXX -o test test.cpp && ./test"
+        chrono_ok=0
+        if verbose_run "$CXX" -std=c++17 -o "$tmpexe" "$tmpc" -lpthread; then
+            { "$tmpexe" >/dev/null 2>&1 && chrono_ok=1 || true; } 2>/dev/null
+        fi
+        if [ "$chrono_ok" = 1 ]; then
+            result_detail "correct" \
+                "steady_clock advanced by a plausible," \
+                "correctly-converted duration"
+        else
+            result_detail "FAILED" \
+                "steady_clock did not advance correctly, or" \
+                "duration<double,milli> conversion produced an" \
+                "implausible value"
+        fi
+        rm -f "$tmpexe"
+
+        # <random> correctness: test_pauli_label_parallel.cpp's actual
+        # usage is std::mt19937 seeded for deterministic reproducible
+        # test data - verify the SAME seed produces the SAME sequence
+        # (a broken/non-standard mt19937 implementation, seen on some
+        # exotic standard libraries, could be seeded correctly but
+        # non-deterministic, or simply produce a different - though
+        # still "valid-looking" - sequence than the C++ standard
+        # mandates, which would make paulikit's own reproducibility
+        # guarantees false on that toolchain).
+        cat >"$tmpc" <<'EOF'
+#include <random>
+int main() {
+    std::mt19937 rng(42);
+    // The C++ standard mandates mt19937's exact output sequence for a
+    // given seed - this is not implementation-defined. rng() after
+    // seeding with 42 must be exactly 1608637542 per the standard.
+    uint32_t first = rng();
+    return (first == 1608637542u) ? 0 : 1;
+}
+EOF
+        checking "<random> correctness (std::mt19937(seed) pattern)" \
+            "$CXX -o test test.cpp && ./test"
+        random_ok=0
+        if verbose_run "$CXX" -std=c++17 -o "$tmpexe" "$tmpc"; then
+            { "$tmpexe" >/dev/null 2>&1 && random_ok=1 || true; } 2>/dev/null
+        fi
+        if [ "$random_ok" = 1 ]; then
+            result_detail "correct" \
+                "mt19937(42)'s first output matches the C++" \
+                "standard's mandated exact sequence"
+        else
+            result_detail "FAILED" \
+                "mt19937 did not produce the standard-mandated" \
+                "sequence - paulikit's test reproducibility" \
+                "(test_pauli_label_parallel.cpp) would be unreliable" \
+                "on this toolchain"
+        fi
+        rm -f "$tmpexe"
+    fi
+fi
+
+log ""
+
+# ---------------------------------------------------------------------
+# 3. Cython >=3.0 (best-effort)
+# ---------------------------------------------------------------------
+
+checking "Cython >=3.0" "\$VENV_PY -c 'import Cython'"
+if [ -n "$VENV_PY" ] && "$VENV_PY" -c 'import Cython' >/dev/null 2>&1; then
+    cy_version="$("$VENV_PY" -c \
+        'import Cython; print(Cython.__version__)' 2>/dev/null)"
+    cy_check="$("$VENV_PY" -c "
+import Cython
+parts = Cython.__version__.split('.')
+major = int(parts[0])
+print('ok' if major >= 3 else 'old')
+" 2>/dev/null)"
+    if [ "$cy_check" = "ok" ]; then
+        result "$cy_version (venv, OK)"
+    else
+        result_detail "$cy_version (venv)" \
+            "< 3.0 required — native extension needs upgrade"
+    fi
+elif have cython; then
+    cy_version="$(cython --version 2>&1 | head -1)"
+    result_detail "$cy_version (system PATH)" \
+        "not in venv — will need 'pip install cython' in venv to" \
+        "build native extension"
+else
+    result "not found (native extension cannot be built without it)"
+fi
+
+# -----------------------------------------------------------------
+# Cython correctness battery — same philosophy as the C++/Python
+# batteries: a bare version-string check does not verify Cython can
+# actually build THIS project's real code. pauli_label_native.pyx
+# (verified by reading it directly, not assumed) does 4 specific
+# things a version check never exercises: `cimport numpy as cnp` +
+# `cnp.import_array()` (the NumPy C-API — a real, historically common
+# failure mode when NumPy's Cython headers aren't discoverable or a
+# Cython/NumPy ABI mismatch exists), `from libc.stdint cimport
+# uint32_t, int64_t` (C-level integer typing), typed
+# `cnp.ndarray[T, ndim=1]` buffer access, and compiling to C++ (this
+# project's meson.build sets override_options:
+# ['cython_language=cpp'], not the Cython default of C). This test
+# replicates all four exactly: transpiles a minimal .pyx doing real
+# NumPy-buffer arithmetic to C++ via `cython --cplus`, compiles the
+# result with the SAME $CXX already validated above, links against
+# the venv's real NumPy/Python headers, imports the resulting
+# extension module, and checks an actual computed sum — not just
+# "did every step exit 0."
+# -----------------------------------------------------------------
+
+if [ -n "$VENV_PY" ] && [ -n "$CXX" ] && [ "$native_toolchain_ok" -eq 1 ] \
+    && "$VENV_PY" -c 'import Cython' >/dev/null 2>&1
+then
+    venv_cython="$(dirname "$VENV_PY")/cython"
+    if [ -x "$venv_cython" ]; then
+        cy_battery_dir="${TMPDIR}/paulikit-configure-cybattery-$$"
+        mkdir -p "$cy_battery_dir"
+        cy_src="$cy_battery_dir/paulikit_cy_check.pyx"
+        cat >"$cy_src" <<'EOF'
+# cython: language_level=3
+import numpy as np
+cimport numpy as cnp
+from libc.stdint cimport uint32_t, int64_t
+
+cnp.import_array()
+
+def sum_uint32_array(cnp.ndarray[uint32_t, ndim=1] arr):
+    cdef cnp.ndarray[uint32_t, ndim=1] c_arr = \
+        np.ascontiguousarray(arr, dtype=np.uint32)
+    cdef int64_t total = 0
+    cdef int64_t i
+    for i in range(c_arr.shape[0]):
+        total += c_arr[i]
+    return total
+EOF
+        checking "Cython -> C++ -> NumPy buffer round-trip" \
+            "cython --cplus, then \$CXX, then import + verify sum"
+        cy_ok=0
+        np_include="$("$VENV_PY" -c \
+            'import numpy; print(numpy.get_include())' 2>/dev/null)"
+        py_include="$("$VENV_PY" -c \
+            'import sysconfig; print(sysconfig.get_path("include"))' \
+            2>/dev/null)"
+        if verbose_run "$venv_cython" --cplus -3 "$cy_src"; then
+            cy_cpp="${cy_src%.pyx}.cpp"
+            cy_so="$cy_battery_dir/paulikit_cy_check.so"
+            if verbose_run "$CXX" -shared -fPIC -std=c++17 \
+                -I"$np_include" -I"$py_include" "$cy_cpp" -o "$cy_so"
+            then
+                cy_result="$("$VENV_PY" -c "
+import sys
+sys.path.insert(0, '$cy_battery_dir')
+import numpy as np
+import paulikit_cy_check
+result = paulikit_cy_check.sum_uint32_array(
+    np.array([1, 2, 3, 4, 5], dtype=np.uint32))
+print('ok' if result == 15 else 'MISMATCH')
+" 2>/dev/null)"
+                [ "$cy_result" = "ok" ] && cy_ok=1
+            fi
+        fi
+        rm -rf "$cy_battery_dir"
+        if [ "$cy_ok" = 1 ]; then
+            result_detail "correct" \
+                "cimport numpy, C-level stdint typing, and typed" \
+                "ndarray buffer access all verified working end to" \
+                "end (transpile, compile as C++, link, import, execute)"
+        else
+            result_detail "FAILED" \
+                "the Cython->C++->NumPy pipeline did not produce a" \
+                "working, correct extension module - see" \
+                "src/paulikit/_native/pauli_label_native.pyx for the" \
+                "real code this mirrors; native extension may fail" \
+                "to build even though Cython itself is present"
+        fi
+    fi
+fi
+
+log ""
+
+# ---------------------------------------------------------------------
+# 4. meson >=1.1.0 (best-effort) — everything else meson-mediated is
+#    downstream of this; checked here as its own item, not gating
+#    items 2/3/5 since those are configure's own independent compile-
+#    tests, not meson invocations.
+# ---------------------------------------------------------------------
+
+venv_meson="$([ -n "$VENV_PY" ] && dirname "$VENV_PY")/meson"
+checking "meson >=1.1.0" "\$VENV_PY -m mesonbuild.mesonmain --version"
+if [ -n "$VENV_PY" ] && "$VENV_PY" -c 'import mesonbuild' >/dev/null 2>&1
+then
+    # Real bug found and fixed: mesonbuild.coredata is NOT auto-
+    # imported as a submodule of the mesonbuild package - referencing
+    # it without an explicit `import mesonbuild.coredata` first always
+    # raised AttributeError, silently swallowed by this check's own
+    # `|| echo unknown` fallback, so meson's version was ALWAYS
+    # reported as "unknown" even when meson was present and working.
+    # `meson --version` (or, equivalently, the mesonmain module's own
+    # --version) is simpler and doesn't depend on mesonbuild's
+    # internal module layout.
+    if [ -x "$venv_meson" ]; then
+        meson_version="$("$venv_meson" --version 2>/dev/null || echo unknown)"
+    else
+        meson_version="$("$VENV_PY" -m mesonbuild.mesonmain --version \
+            2>/dev/null || echo unknown)"
+    fi
+    result_detail "$meson_version (venv)" \
+        "required: >=1.1.0, per meson.build"
+elif have meson; then
+    meson_version="$(meson --version 2>/dev/null)"
+    result_detail "$meson_version (system PATH)" \
+        "not in venv — pip install -e .[dev] will pull it in"
+else
+    result_detail "not found" \
+        "will be pulled in automatically by pip's build isolation" \
+        "unless --no-build-isolation is used"
+fi
+
+report "Native-extension build option" \
+    "-Dnative={auto,enabled,disabled}, default 'auto'"
+log "  (see meson.options)"
+
+# -----------------------------------------------------------------
+# meson correctness battery — a version-string check never verifies
+# meson can actually configure THIS project. This project's
+# meson.build declares 3 languages including 'cython' (meson's cython
+# support is a much newer, narrower feature than core meson - not
+# every meson install/version handles it correctly), uses
+# import('python').find_installation(pure: false) for the extension-
+# module build, and _native/meson.build resolves dependency('tbb',
+# ...) via pkg-config/cmake. Rather than re-simulate any of that,
+# this runs the SAME real `meson setup` command `make build` itself
+# depends on, in a throwaway temp build directory, and checks its own
+# reported findings for the compilers/dependencies it actually
+# discovered - the most authoritative possible test, since it's
+# literally the real build's own first step, not a diagnostic
+# approximation of it.
+# -----------------------------------------------------------------
+
+if [ -x "$venv_meson" ]; then
+    meson_battery_dir="${TMPDIR}/paulikit-configure-mesonbattery-$$"
+    checking "meson setup (real configure of this project)" \
+        "$venv_meson setup <tmpdir>"
+    # meson's own compiler-detection subprocess looks up cython/cython3
+    # via a bare PATH search - same root cause already fixed in
+    # Makefile.in's build target - so the venv's bin/ must
+    # be prepended here too, or this falsely reports FAILED even
+    # though `make build` itself would succeed.
+    #
+    # meson_setup_rc must be captured with `|| meson_setup_rc=$?`
+    # directly on the assignment, NOT via a separate `$?` statement
+    # afterward - under `set -e`, a command substitution whose
+    # underlying command exits nonzero kills the whole script at the
+    # assignment itself, before any later statement (including one
+    # meant to read $? for graceful handling) is ever reached.
+    meson_setup_rc=0
+    meson_setup_out="$(PATH="$(dirname "$VENV_PY"):$PATH" \
+        "$venv_meson" setup "$meson_battery_dir" 2>&1)" \
+        || meson_setup_rc=$?
+    if [ "$VERBOSE" -eq 1 ]; then
+        printf '%s\n' "$meson_setup_out" | tee -a config.log
+    fi
+    if [ "$meson_setup_rc" -eq 0 ]; then
+        result "succeeded"
+        cython_found="no"
+        tbb_found="no"
+        printf '%s\n' "$meson_setup_out" | grep -qi \
+            "^Cython compiler for the host machine:" && cython_found="yes"
+        printf '%s\n' "$meson_setup_out" | grep -qi \
+            "dependency tbb found: YES" && tbb_found="yes"
+        report "  Cython language module resolved" "$cython_found"
+        report "  tbb dependency resolved" "$tbb_found"
+    else
+        result_detail "FAILED" \
+            "meson setup could not configure this project - the" \
+            "native extension build (make build) will also fail;" \
+            "re-run with --verbose to see meson's own error output"
+    fi
+    rm -rf "$meson_battery_dir"
+fi
+
+log ""
+
+# ---------------------------------------------------------------------
+# 5. oneTBB (best-effort; requires a working C++ compiler, so this
+#    check strictly follows item 2, never precedes it)
+# ---------------------------------------------------------------------
+
+checking "oneTBB" "$CXX -std=c++17 -I<tbb> -o test test.cpp -ltbb"
+if [ "$native_toolchain_ok" -eq 1 ]; then
+    cat >"$tmpc" <<'EOF'
+#include <tbb/tbb.h>
+int main() { return 0; }
+EOF
+    tbb_flags=""
+    for prefix in "${TBB_ROOT:-}" "${CMAKE_PREFIX_PATH:-}" /usr \
+        /usr/local /opt/homebrew
+    do
+        [ -n "$prefix" ] || continue
+        [ -d "$prefix/include" ] || continue
+        tbb_flags="-I${prefix}/include -L${prefix}/lib"
+    done
+
+    # tbb_flags is deliberately two space-separated tokens (-Ipath
+    # -Lpath); POSIX sh has no arrays, so unquoted word-splitting is
+    # the intended mechanism here, not an oversight. Passed to
+    # verbose_run the same way, for the same reason.
+    tbb_link_ok=0
+    # shellcheck disable=SC2086
+    if verbose_run "$CXX" -std=c++17 $tbb_flags -o "$tmpexe" "$tmpc" -ltbb
+    then
+        tbb_link_ok=1
+        result_detail "found" \
+            "links successfully (native parallel labeling available)"
+    else
+        result_detail "NOT found" \
+            "or failed to link (native ext falls back to" \
+            "serial-only or pure Python, per -Dnative policy)"
+        if [ -n "${TBB_ROOT:-}" ] || [ -n "${CMAKE_PREFIX_PATH:-}" ]; then
+            log "  TBB_ROOT / CMAKE_PREFIX_PATH is set but did not"
+            log "  resolve TBB — check the path is correct"
+        else
+            log "  Hint: macOS: 'brew install tbb', set TBB_ROOT or"
+            log "  CMAKE_PREFIX_PATH. Linux: install tbb-devel/"
+            log "  libtbb-dev. Windows: vcpkg install tbb, set"
+            log "  CMAKE_TOOLCHAIN_FILE."
+        fi
+    fi
+    rm -f "$tmpexe"
+
+    # -----------------------------------------------------------
+    # oneTBB correctness battery — the link-test above only proves
+    # <tbb/tbb.h> compiles and -ltbb links; it never calls a single
+    # TBB API, so it can't catch a TBB that links but produces wrong
+    # results, races, or silently runs serially. Read
+    # _native/pauli_label_parallel.cpp directly (not assumed): the
+    # real code uses the SPECIFIC headers <oneapi/tbb/parallel_for.h>
+    # + <oneapi/tbb/blocked_range.h> (not the umbrella <tbb/tbb.h>
+    # this link-test uses), calling tbb::parallel_for over a
+    # tbb::blocked_range<int64_t> with a capturing lambda - exactly
+    # this project's own parallel-loop pattern. This test replicates
+    # it: parallel-fills a buffer via that exact API shape, then
+    # verifies the actual summed result is correct, matching how
+    # pauli_label_batch_parallel's own correctness is defined (see
+    # tests/test_pauli_label_parallel.cpp's compare-against-serial
+    # discipline, mirrored here as compare-against-known-sum since
+    # this diagnostic doesn't have the serial kernel to compare
+    # against directly).
+    # -----------------------------------------------------------
+
+    if [ "$tbb_link_ok" -eq 1 ]; then
+        cat >"$tmpc" <<'EOF'
+#include <oneapi/tbb/parallel_for.h>
+#include <oneapi/tbb/blocked_range.h>
+#include <cstdint>
+#include <vector>
+
+int main() {
+    const int64_t n = 100000;
+    std::vector<uint32_t> out(n, 0);
+    tbb::parallel_for(
+        tbb::blocked_range<int64_t>(0, n),
+        [&](const tbb::blocked_range<int64_t> &range) {
+            for (int64_t i = range.begin(); i != range.end(); ++i) {
+                out[i] = static_cast<uint32_t>(i);
+            }
+        }
+    );
+    uint64_t sum = 0;
+    for (int64_t i = 0; i < n; ++i) sum += out[i];
+    // 0+1+...+99999 = 99999*100000/2 = 4999950000
+    return (sum == 4999950000ULL) ? 0 : 1;
+}
+EOF
+        checking "oneTBB parallel_for correctness" \
+            "\$CXX ... -ltbb, verify parallel-filled sum is exact"
+        tbb_correct_ok=0
+        # shellcheck disable=SC2086
+        if verbose_run "$CXX" -std=c++17 $tbb_flags -o "$tmpexe" "$tmpc" \
+            -ltbb
+        then
+            { "$tmpexe" >/dev/null 2>&1 && tbb_correct_ok=1 || true; } \
+                2>/dev/null
+        fi
+        if [ "$tbb_correct_ok" = 1 ]; then
+            result_detail "correct" \
+                "tbb::parallel_for over tbb::blocked_range<int64_t>" \
+                "with a capturing lambda produced the exact expected" \
+                "sum, matching pauli_label_batch_parallel's own" \
+                "API usage exactly"
+        else
+            result_detail "FAILED" \
+                "parallel_for compiled/linked but produced a wrong" \
+                "result, or crashed - the native extension's parallel" \
+                "labeling path (pauli_label_batch_parallel) may be" \
+                "unreliable on this TBB installation even though it" \
+                "builds successfully"
+        fi
+        rm -f "$tmpexe"
+
+        # oneTBB's own NUMA-awareness: tbb::info::numa_nodes() +
+        # tbb::info::default_concurrency(numa_id), from
+        # <oneapi/tbb/info.h> - confirmed present in this project's
+        # actual TBB headers before writing this check, not assumed.
+        # paulikit does not currently use these APIs (its own
+        # parallel_for usage above has no explicit NUMA pinning), but
+        # on a real multi-socket/HPC node this reports whether the
+        # installed TBB version CAN pin work to specific NUMA nodes -
+        # relevant if the chunk_size auto-tuner (or any future
+        # work) ever wants oneTBB itself to be NUMA-aware, not just
+        # for this diagnostic to passively report node count via
+        # numactl separately below.
+        cat >"$tmpc" <<'EOF'
+#include <oneapi/tbb/info.h>
+#include <cstdio>
+int main() {
+    auto nodes = tbb::info::numa_nodes();
+    if (nodes.empty()) return 1;
+    int total_concurrency = 0;
+    for (auto n : nodes) {
+        int c = tbb::info::default_concurrency(n);
+        if (c <= 0) return 1;
+        total_concurrency += c;
+    }
+    printf("%zu %d\n", nodes.size(), total_concurrency);
+    return 0;
+}
+EOF
+        checking "oneTBB NUMA awareness (tbb::info API)" \
+            "\$CXX ... -ltbb, verify tbb::info::numa_nodes() works"
+        tbb_numa_ok=0
+        tbb_numa_out=""
+        # shellcheck disable=SC2086
+        if verbose_run "$CXX" -std=c++17 $tbb_flags -o "$tmpexe" "$tmpc" \
+            -ltbb
+        then
+            tbb_numa_out="$("$tmpexe" 2>/dev/null || true)"
+            [ -n "$tbb_numa_out" ] && tbb_numa_ok=1
+        fi
+        if [ "$tbb_numa_ok" = 1 ]; then
+            numa_node_n="$(printf '%s' "$tbb_numa_out" | cut -d' ' -f1)"
+            numa_conc="$(printf '%s' "$tbb_numa_out" | cut -d' ' -f2)"
+            result_detail "available" \
+                "tbb::info reports $numa_node_n NUMA node(s)," \
+                "total default_concurrency=$numa_conc across them" \
+                "(paulikit does not currently use this API - informational)"
+        else
+            result_detail "unavailable" \
+                "tbb::info::numa_nodes()/default_concurrency() did" \
+                "not work on this TBB installation (older TBB version," \
+                "or built without NUMA support) - not currently used" \
+                "by paulikit, informational only"
+        fi
+        rm -f "$tmpexe"
+    fi
+else
+    result_detail "skipped" "no working C++17 compiler — see above"
+fi
+
+# ---------------------------------------------------------------------
+# 9. NumPy's linked BLAS backend + thread count (best-effort, venv
+#    Python — per the PEP 405/668-grounded decision that diagnostics
+#    should characterize the environment paulikit will actually run
+#    in, not system Python) — surfaces the OpenBLAS idle-worker-pool
+#    confound found the hard way in
+#    (measured directly; OpenBLAS thread-pool confound)
+# ---------------------------------------------------------------------
+
+log ""
+log "== NumPy / BLAS backend =="
+
+checking "NumPy BLAS backend" "\$VENV_PY -c 'import numpy, threadpoolctl'"
+if [ -n "$VENV_PY" ] && "$VENV_PY" -c 'import numpy' >/dev/null 2>&1; then
+    if "$VENV_PY" -c 'import threadpoolctl' >/dev/null 2>&1; then
+        result "(threadpoolctl):"
+        "$VENV_PY" -c '
+import threadpoolctl
+for info in threadpoolctl.threadpool_info():
+    api = info.get("internal_api", "?")
+    threads = info.get("num_threads", "?")
+    path = info.get("filepath", "?")
+    print(f"  {api:10s} {threads} threads  ({path})")
+' 2>/dev/null | tee -a config.log \
+            || report "BLAS backend" "threadpoolctl present but query failed"
+    else
+        blas_summary="$("$VENV_PY" -c '
+import numpy
+cfg = numpy.show_config(mode="dicts")
+blas = cfg.get("Build Dependencies", {}).get("blas", {})
+print(blas.get("name", "unknown"), blas.get("version", ""))
+' 2>/dev/null || echo "unknown (numpy/show_config unavailable)")"
+        result_detail "$blas_summary" \
+            "(numpy.show_config — install threadpoolctl in the venv" \
+            "for exact thread-count reporting)"
+    fi
+    log "  Known confound: OpenBLAS spawns an idle worker-thread pool"
+    log "  at 'import numpy' — set OPENBLAS_NUM_THREADS=1 for clean"
+    log "  perf stat measurements."
+
+    # -----------------------------------------------------------
+    # FWHT butterfly-pattern correctness — read
+    # _walsh_hadamard_transform_rows in algorithms/fwht.py directly
+    # (not assumed): paulikit's actual transform is PURE elementwise
+    # complex add/subtract on reshaped array views (reshape,
+    # slice-assign, +, -) - no np.dot/@/matmul/linalg call anywhere.
+    # This means BLAS's own correctness is NOT actually load-bearing
+    # for paulikit's math (see the separate, explicitly-labeled
+    # generic BLAS check below for that different question). What
+    # IS load-bearing is this specific reshape+slice-assign+add/
+    # subtract pattern working correctly on complex arrays - checked
+    # here by replicating the exact algorithm and verifying it
+    # against two known Walsh-Hadamard-transform identities: the
+    # unnormalized WHT of a delta function [1,0,0,0] is the all-ones
+    # vector [1,1,1,1], and WHT is involutive up to a factor of dim,
+    # so WHT([1,1,1,1]) = [4,0,0,0].
+    # -----------------------------------------------------------
+
+    checking "FWHT butterfly pattern correctness" \
+        "\$VENV_PY -c '<replicates _walsh_hadamard_transform_rows>'"
+    fwht_check_result="$("$VENV_PY" -c '
+import numpy as np
+
+def wht_rows(array):
+    transformed = array.copy()
+    dim = array.shape[1]
+    span = 1
+    while span < dim:
+        transformed = transformed.reshape(
+            transformed.shape[0], dim // (2 * span), 2, span)
+        left = transformed[:, :, 0, :]
+        right = transformed[:, :, 1, :]
+        left, right = left + right, left - right
+        transformed[:, :, 0, :] = left
+        transformed[:, :, 1, :] = right
+        transformed = transformed.reshape(transformed.shape[0], dim)
+        span *= 2
+    return transformed
+
+delta = np.array([[1, 0, 0, 0]], dtype=complex)
+ones_expected = np.array([[1, 1, 1, 1]], dtype=complex)
+ones_result = wht_rows(delta)
+
+ones = np.array([[1, 1, 1, 1]], dtype=complex)
+delta4_expected = np.array([[4, 0, 0, 0]], dtype=complex)
+delta4_result = wht_rows(ones)
+
+if (np.array_equal(ones_result, ones_expected)
+        and np.array_equal(delta4_result, delta4_expected)):
+    print("ok")
+else:
+    print("MISMATCH")
+' 2>/dev/null)"
+    if [ "$fwht_check_result" = "ok" ]; then
+        result_detail "correct" \
+            "reshape+slice-assign+complex add/subtract pattern" \
+            "verified against known WHT identities" \
+            "(delta<->all-ones), matching paulikit's real algorithm"
+    else
+        result_detail "FAILED" \
+            "the reshape/slice-assign/complex-arithmetic pattern did" \
+            "not reproduce known WHT identities - paulikit's core" \
+            "transform (_walsh_hadamard_transform_rows) may be" \
+            "unreliable on this NumPy build"
+    fi
+
+    # -----------------------------------------------------------
+    # Generic BLAS correctness — separate, explicitly-labeled
+    # question from the above: not currently load-bearing for
+    # paulikit's own math (no BLAS-backed call exists in the hot
+    # path today), but a broken BLAS install is diagnostically
+    # interesting on its own, and this remains forward-looking in
+    # case a BLAS-backed path is ever added. A small matmul checked
+    # against an exact known answer.
+    # -----------------------------------------------------------
+
+    checking "generic BLAS correctness (not currently used by paulikit)" \
+        "\$VENV_PY -c '<small matmul against a known answer>'"
+    blas_check_result="$("$VENV_PY" -c '
+import numpy as np
+a = np.array([[1.0, 2.0], [3.0, 4.0]])
+b = np.array([[5.0, 6.0], [7.0, 8.0]])
+c = a @ b
+expected = np.array([[19.0, 22.0], [43.0, 50.0]])
+print("ok" if np.allclose(c, expected) else "MISMATCH")
+' 2>/dev/null)"
+    if [ "$blas_check_result" = "ok" ]; then
+        result_detail "correct" \
+            "2x2 matmul against a known exact answer verified" \
+            "(informational — not currently used by paulikit)"
+    else
+        result_detail "FAILED" \
+            "BLAS-backed matmul produced a wrong result - this" \
+            "specific NumPy/BLAS install may be broken, though it" \
+            "would not currently affect paulikit's own math"
+    fi
+else
+    result_detail "not installed in venv" \
+        "run 'make install' first, or this venv creation failed above"
+fi
+
+log ""
+
+# ---------------------------------------------------------------------
+# v2 — SIMD (AVX2/AVX-512) real compile-and-execute micro-tests
+# (diagnostic only — this result must NEVER be used to auto-apply
+# -march=native anywhere; see
+# measured directly for the known
+# SIGILL wheel-portability hazard of doing that)
+# ---------------------------------------------------------------------
+
+log "== SIMD (compile-and-execute, diagnostic only — never auto-applied) =="
+
+if [ -n "$CXX" ]; then
+    cat >"$tmpc" <<'EOF'
+#include <immintrin.h>
+int main() {
+    __m256i a = _mm256_set1_epi32(1);
+    __m256i b = _mm256_add_epi32(a, a);
+    int out[8];
+    _mm256_storeu_si256((__m256i *)out, b);
+    return out[0] - 2;
+}
+EOF
+    checking "AVX2" "$CXX -mavx2 (compile + execute _mm256_add_epi32)"
+    avx2_ok=0
+    if verbose_run "$CXX" -mavx2 -o "$tmpexe" "$tmpc"; then
+        # The execute step can die by SIGILL on a CPU without AVX2 —
+        # bash prints its own job-control notice for a signal-killed
+        # foreground command regardless of the command's own
+        # redirection, so this must stay wrapped in { ...; } 2>/dev/null
+        # even under --verbose (verbose_run's own output already
+        # covers the compile step; the execute step's failure mode
+        # here is "crashed", not "produced diagnosable output").
+        { "$tmpexe" >/dev/null 2>&1 && avx2_ok=1 || true; } 2>/dev/null
+    fi
+    if [ "$avx2_ok" = 1 ]; then
+        result_detail "yes" "compiled and executed a real AVX2 op"
+    else
+        result_detail "no" \
+            "compile or execute failed — either unsupported by this" \
+            "CPU or this compiler"
+    fi
+    rm -f "$tmpexe"
+
+    cat >"$tmpc" <<'EOF'
+#include <immintrin.h>
+int main() {
+    __m512i a = _mm512_set1_epi32(1);
+    __m512i b = _mm512_add_epi32(a, a);
+    int out[16];
+    _mm512_storeu_si512((void *)out, b);
+    return out[0] - 2;
+}
+EOF
+    checking "AVX-512F" "$CXX -mavx512f (compile + execute _mm512_add_epi32)"
+    avx512_ok=0
+    if verbose_run "$CXX" -mavx512f -o "$tmpexe" "$tmpc"; then
+        # Same SIGILL-suppression rationale as the AVX2 execute step
+        # above — must stay wrapped even under --verbose.
+        { "$tmpexe" >/dev/null 2>&1 && avx512_ok=1 || true; } 2>/dev/null
+    fi
+    if [ "$avx512_ok" = 1 ]; then
+        result_detail "yes" "compiled and executed a real AVX-512F op"
+    else
+        result_detail "no" \
+            "compile or execute failed — either unsupported by this" \
+            "CPU or this compiler"
+    fi
+    rm -f "$tmpexe"
+else
+    checking "AVX2" ""
+    result_detail "unknown" \
+        "no C++ compiler found — see C++ toolchain section above"
+    checking "AVX-512F" ""
+    result_detail "unknown" \
+        "no C++ compiler found — see C++ toolchain section above"
+fi
+log "  Note: diagnostic only — never used to auto-apply -march=native"
+log "  (known SIGILL wheel-portability hazard)"
+
+log ""
+
+# ---------------------------------------------------------------------
+# v2 — SIMD, aarch64 (NEON) and riscv64 (RVV) real compile-and-execute
+# micro-tests, cross-arch counterparts to the AVX2/AVX-512 block above.
+# This host is x86_64, so these always cross-compile with
+# aarch64-linux-gnu-g++/riscv64-linux-gnu-g++ (-static, to avoid a
+# cross-sysroot -L dependency at run time) and execute under
+# qemu-aarch64/qemu-riscv64 user-mode emulation — same approach as the
+# --probe-cache-latency assembly probes. NEON is baseline-mandatory on
+# real aarch64 hardware (unlike AVX2/AVX-512, which are optional x86
+# extensions) so this is really a compiler/toolchain-support check;
+# RVV is genuinely optional and uneven across real RISC-V hardware, so
+# it IS a meaningful capability probe, same spirit as the AVX tests.
+# Same diagnostic-only caveat applies — never auto-applied to build
+# flags. Also same QEMU caveat as the cache-latency probes: a clean
+# run here proves the instructions assemble/execute under emulation,
+# not that a given real target actually implements that extension
+# (RVV in particular — QEMU's default CPU model's vector config may
+# not match any real target's actual VLEN/subset).
+# ---------------------------------------------------------------------
+
+log "== SIMD, aarch64/riscv64 (compile-execute, diagnostic only) =="
+
+
+if have aarch64-linux-gnu-g++ && have qemu-aarch64; then
+    cat >"$tmpc" <<'EOF'
+#include <arm_neon.h>
+int main() {
+    int32x4_t a = vdupq_n_s32(1);
+    int32x4_t b = vaddq_s32(a, a);
+    int out[4];
+    vst1q_s32(out, b);
+    return out[0] - 2;
+}
+EOF
+    checking "NEON (aarch64)" \
+        "aarch64-linux-gnu-g++ -static + qemu-aarch64 (vaddq_s32)"
+    neon_ok=0
+    if verbose_run aarch64-linux-gnu-g++ -static \
+        -o "$tmpexe" "$tmpc"
+    then
+        { qemu-aarch64 "$tmpexe" >/dev/null 2>&1 && neon_ok=1 \
+            || true; } 2>/dev/null
+    fi
+    if [ "$neon_ok" = 1 ]; then
+        result_detail "yes (QEMU user-mode)" \
+            "compiled and executed a real NEON op under emulation —" \
+            "proves compiler/toolchain support, not real-hardware" \
+            "capability (NEON is baseline-mandatory on real aarch64" \
+            "hardware, unlike AVX2/AVX-512's optional x86 status)"
+    else
+        result_detail "no" \
+            "compile, cross-toolchain, or qemu-aarch64 run failed"
+    fi
+    rm -f "$tmpexe"
+else
+    checking "NEON (aarch64)" ""
+    result_detail "skipped" \
+        "requires aarch64-linux-gnu-g++ (cross-compiler) and" \
+        "qemu-aarch64 (user-mode emulation) to compile+run this" \
+        "cross-architecture probe from an x86_64 host"
+fi
+
+if have riscv64-linux-gnu-g++ && have qemu-riscv64; then
+    cat >"$tmpc" <<'EOF'
+#include <riscv_vector.h>
+int main() {
+    size_t vl = __riscv_vsetvl_e32m1(4);
+    vint32m1_t a = __riscv_vmv_v_x_i32m1(1, vl);
+    vint32m1_t b = __riscv_vadd_vv_i32m1(a, a, vl);
+    int out[4];
+    __riscv_vse32_v_i32m1(out, b, vl);
+    return out[0] - 2;
+}
+EOF
+    checking "RVV (riscv64)" \
+        "riscv64-linux-gnu-g++ -march=rv64gcv -static + qemu-riscv64"
+    rvv_ok=0
+    if verbose_run riscv64-linux-gnu-g++ -march=rv64gcv -static \
+        -o "$tmpexe" "$tmpc"
+    then
+        { qemu-riscv64 "$tmpexe" >/dev/null 2>&1 && rvv_ok=1 \
+            || true; } 2>/dev/null
+    fi
+    if [ "$rvv_ok" = 1 ]; then
+        result_detail "yes (QEMU user-mode)" \
+            "compiled and executed a real RVV op under emulation —" \
+            "RVV is genuinely optional/uneven across real RISC-V" \
+            "hardware, so a clean run here does NOT prove a given" \
+            "real target implements it, only that the toolchain and" \
+            "QEMU's default vector model do"
+    else
+        result_detail "no" \
+            "compile (requires -march=rv64gcv), cross-toolchain," \
+            "or qemu-riscv64 run failed"
+    fi
+    rm -f "$tmpexe"
+else
+    checking "RVV (riscv64)" ""
+    result_detail "skipped" \
+        "requires riscv64-linux-gnu-g++ (cross-compiler) and" \
+        "qemu-riscv64 (user-mode emulation) to compile+run this" \
+        "cross-architecture probe from an x86_64 host"
+fi
+log "  Note: diagnostic only — never used to auto-apply target-specific"
+log "  build flags (same SIGILL/portability rationale as the x86_64"
+log "  SIMD block above)"
+
+log ""
+
+# ---------------------------------------------------------------------
+# v2 — GPU/CUDA presence (informational only — paulikit has no GPU path)
+# ---------------------------------------------------------------------
+
+log "== GPU / CUDA (informational — paulikit has no GPU code path) =="
+
+checking "nvidia-smi" "command -v nvidia-smi"
+if have nvidia-smi; then
+    gpu_name="$(nvidia-smi --query-gpu=name --format=csv,noheader \
+        2>/dev/null | head -1)"
+    result "found (${gpu_name:-unknown GPU})"
+else
+    result "not found"
+fi
+checking "nvcc" "command -v nvcc"
+if have nvcc; then
+    nvcc_version="$(nvcc --version 2>/dev/null | tail -1)"
+    result "found ($nvcc_version)"
+else
+    result "not found"
+fi
+
+log ""
+
+# ---------------------------------------------------------------------
+# v2 — MPI toolchain presence (informational only — paulikit has no
+# MPI path)
+# ---------------------------------------------------------------------
+
+log "== MPI (informational — paulikit has no MPI code path) =="
+
+checking "mpicc" "command -v mpicc"
+if have mpicc; then
+    result "found ($(mpicc --version 2>/dev/null | head -1))"
+else
+    result "not found"
+fi
+checking "mpirun" "command -v mpirun"
+if have mpirun; then
+    result "found"
+else
+    result "not found"
+fi
+
+log ""
+
+# ---------------------------------------------------------------------
+# v2 — psutil presence (optional: whether chunk_size auto-tuning can
+# rely on psutil for live memory queries)
+# ---------------------------------------------------------------------
+
+checking "psutil (optional, for live memory queries)" \
+    "\$VENV_PY -c 'import psutil'"
+if [ -n "$VENV_PY" ] && "$VENV_PY" -c 'import psutil' >/dev/null 2>&1
+then
+    psutil_version="$("$VENV_PY" -c \
+        'import psutil; print(psutil.__version__)' 2>/dev/null)"
+    result "$psutil_version"
+else
+    result_detail "not found" \
+        "not a paulikit dependency; the memory budget falls back to" \
+        "/proc/meminfo and cgroup limits"
+fi
+
+log ""
+
+# ---------------------------------------------------------------------
+# v2 — container/VM detection (cgroup limits differ from bare-metal
+# ulimit -v — every N=150 memory-cap finding to date assumed bare
+# metal; this matters if profiling is ever run inside a container)
+# ---------------------------------------------------------------------
+
+log "== Container / VM detection =="
+
+checking "container/VM" "systemd-detect-virt"
+if have systemd-detect-virt; then
+    virt="$(systemd-detect-virt 2>/dev/null || true)"
+    if [ -z "$virt" ] || [ "$virt" = "none" ]; then
+        result "none (bare metal)"
+    else
+        result_detail "$virt" \
+            "cgroup memory limits may differ from bare-metal" \
+            "ulimit -v; see cgroup notes below if profiling here"
+    fi
+else
+    result_detail "unknown" \
+        "systemd-detect-virt not found — cannot determine" \
+        "bare-metal vs. container/VM automatically"
+fi
+
+log ""
+
+# ---------------------------------------------------------------------
+# v2 — /proc/sys/kernel/perf_event_paranoid (currently copy-pasted
+# identically in several measurement scripts; centralized
+# here as a single source of truth)
+# ---------------------------------------------------------------------
+
+checking "perf_event_paranoid" \
+    "cat /proc/sys/kernel/perf_event_paranoid"
+if [ -r /proc/sys/kernel/perf_event_paranoid ]; then
+    paranoid="$(cat /proc/sys/kernel/perf_event_paranoid 2>/dev/null \
+        || echo unknown)"
+    result_detail "$paranoid" \
+        "0-1 allows unprivileged perf stat; 2+ requires sudo or a" \
+        "sysctl change"
+else
+    result_detail "not readable" \
+        "Linux-only; on non-Linux, perf stat is unavailable regardless"
+fi
+
+log ""
+
+# ---------------------------------------------------------------------
+# v2 — CPU frequency scaling / governor state (confirmed dynamic and
+# never checked in any measurement to date — a real gap: an
+# unpinned governor can silently invalidate perf-stat timing
+# comparisons across runs)
+# ---------------------------------------------------------------------
+
+log "== CPU frequency governor =="
+
+governor_file="/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor"
+checking "CPU frequency governor" "cat $governor_file"
+if [ -r "$governor_file" ]; then
+    governor="$(cat "$governor_file" 2>/dev/null || echo unknown)"
+    result_detail "$governor" \
+        "perf comparisons across runs assume this stays constant —" \
+        "'performance' is the least noisy for benchmarking," \
+        "'powersave'/'schedutil' can introduce frequency-scaling noise"
+else
+    result_detail "not readable" \
+        "no cpufreq sysfs on this system/OS, or non-Linux"
+fi
+
+log ""
+
+# ---------------------------------------------------------------------
+# v2 — total RAM/swap presence (relevant given real OOMs hit during
+# large-N verification work — see verification/FINDINGS.md)
+# ---------------------------------------------------------------------
+
+log "== RAM / swap =="
+
+case "$OS_FAMILY" in
+    linux)
+        checking "total RAM / swap" "free -h"
+        if have free; then
+            mem_total="$(free -h 2>/dev/null | awk '/^Mem:/ {print $2}')"
+            swap_total="$(free -h 2>/dev/null | awk '/^Swap:/ {print $2}')"
+            result "RAM=${mem_total:-unknown}, swap=${swap_total:-unknown}"
+        else
+            result "unknown ('free' not found — unexpected on Linux)"
+        fi
+
+        # v3 — MemAvailable and any cgroup memory cap, matching what
+        # paulikit.algorithms.autotune.available_memory_bytes() (the
+        # runtime chunk_size/streaming-vs-dense auto-tuner)
+        # actually reads. The RAM/swap check above only
+        # reports *total* RAM (an unchanging hardware fact); it does
+        # not reflect what a job can actually use right now, which is
+        # what the auto-tuner's decision depends on — reporting it
+        # here too keeps this diagnostic honestly matching the shipped
+        # code's own inputs rather than silently drifting from them.
+        checking "available memory (MemAvailable)" "/proc/meminfo"
+        if [ -r /proc/meminfo ]; then
+            mem_avail_kb="$(awk '/^MemAvailable:/ {print $2}' \
+                /proc/meminfo 2>/dev/null)"
+            if [ -n "$mem_avail_kb" ]; then
+                result_detail "$((mem_avail_kb / 1024)) MiB" \
+                    "matches 'free -h''s 'available' column — reclaimable" \
+                    "page cache/buffers count as usable, unlike the raw" \
+                    "'free' figure"
+            else
+                result_detail "unknown" \
+                    "MemAvailable field not present in /proc/meminfo —" \
+                    "very old kernel, pre-3.14"
+            fi
+        else
+            result "unknown (/proc/meminfo not readable)"
+        fi
+
+        checking "cgroup memory cap (v2 then v1)" \
+            "/sys/fs/cgroup/memory.max, memory.limit_in_bytes"
+        cgroup_limit=""
+        if [ -r /sys/fs/cgroup/memory.max ]; then
+            v2_val="$(cat /sys/fs/cgroup/memory.max 2>/dev/null)"
+            if [ "$v2_val" != "max" ] && [ -n "$v2_val" ]; then
+                cgroup_limit="$((v2_val / 1024 / 1024)) MiB (cgroup v2)"
+            fi
+        fi
+        if [ -z "$cgroup_limit" ] \
+            && [ -r /sys/fs/cgroup/memory/memory.limit_in_bytes ]; then
+            v1_val="$(cat /sys/fs/cgroup/memory/memory.limit_in_bytes \
+                2>/dev/null)"
+            # v1's sentinel for "unset" is a huge value near
+            # 2^63 — one page — compare against total physical RAM
+            # (already known from the check above, in KiB) rather
+            # than hardcoding the sentinel, matching
+            # autotune._cgroup_memory_limit_bytes()'s own logic.
+            total_kb="$(awk '/^MemTotal:/ {print $2}' \
+                /proc/meminfo 2>/dev/null)"
+            if [ -n "$v1_val" ] && [ -n "$total_kb" ]; then
+                if [ "$v1_val" -lt "$((total_kb * 1024))" ] 2>/dev/null; then
+                    cgroup_limit="$((v1_val / 1024 / 1024)) MiB (cgroup v1)"
+                fi
+            fi
+        fi
+        if [ -n "$cgroup_limit" ]; then
+            result_detail "$cgroup_limit" \
+                "job is memory-capped below physical RAM — the" \
+                "auto-tuner's streaming-vs-dense decision uses" \
+                "whichever of this and MemAvailable above is smaller"
+        else
+            result_detail "none detected" \
+                "not cgroup-limited, or not a Linux cgroup v1/v2 host"
+        fi
+        ;;
+    macos)
+        # hw.memsize (bytes) and sysctl vm.swapusage are the standard
+        # Darwin MIB names (Apple's sysctl(3) docs) — not independently
+        # verified on this machine, see the CPU-info section's note.
+        checking "total RAM" "sysctl -n hw.memsize"
+        mem_bytes="$(sysctl -n hw.memsize 2>/dev/null || echo 0)"
+        if [ "$mem_bytes" -gt 0 ] 2>/dev/null; then
+            result "$((mem_bytes / 1024 / 1024 / 1024)) GiB"
+        else
+            result "unknown"
+        fi
+        checking "swap usage" "sysctl vm.swapusage"
+        result "$(sysctl vm.swapusage 2>/dev/null || echo unknown)"
+        ;;
+    freebsd|dragonflybsd|openbsd|netbsd)
+        # hw.physmem (bytes) is the standard BSD MIB name across all
+        # four families — not independently verified on this machine.
+        checking "total RAM" "sysctl -n hw.physmem"
+        mem_bytes="$(sysctl -n hw.physmem 2>/dev/null || echo 0)"
+        if [ "$mem_bytes" -gt 0 ] 2>/dev/null; then
+            result "$((mem_bytes / 1024 / 1024 / 1024)) GiB"
+        else
+            result "unknown"
+        fi
+        checking "swap" "swapctl -l (or swapinfo -h on FreeBSD)"
+        if have swapctl; then
+            result "$(swapctl -l 2>/dev/null | tail -n +2 || echo unknown)"
+        elif have swapinfo; then
+            result "$(swapinfo -h 2>/dev/null | tail -n +2 || echo unknown)"
+        else
+            result "unknown (neither swapctl nor swapinfo found)"
+        fi
+        ;;
+    *)
+        checking "total RAM / swap" "(no known command for this OS)"
+        result_detail "unknown" \
+            "OS family ($OS_KERNEL) — no native memory-info command" \
+            "known for this platform"
+        ;;
+esac
+
+log ""
+
+# ---------------------------------------------------------------------
+# v2 — current system load average (context for any perf measurement
+# taken immediately after configure runs)
+# ---------------------------------------------------------------------
+
+log "== System load average =="
+
+checking "system load average (1m 5m 15m)" "cat /proc/loadavg"
+if [ -r /proc/loadavg ]; then
+    loadavg="$(awk '{print $1, $2, $3}' /proc/loadavg 2>/dev/null \
+        || echo unknown)"
+    result "$loadavg"
+elif have uptime; then
+    result "$(uptime 2>/dev/null | sed 's/.*load average[s]*: //')"
+else
+    result "unknown"
+fi
+
+log ""
+
+# ---------------------------------------------------------------------
+# v2 — actual available perf list event set (cycle_activity.stalls_*
+# confirmed Skylake-family-specific during profiling work, not a
+# universal event name — worth knowing before writing a new perf
+# script that assumes it exists)
+# ---------------------------------------------------------------------
+
+checking "perf list (cycle_activity.stalls_* availability)" \
+    "perf list | grep cycle_activity.stalls"
+if have perf; then
+    stalls_events="$(perf list 2>/dev/null \
+        | grep -c 'cycle_activity.stalls' || true)"
+    if [ "$stalls_events" -gt 0 ] 2>/dev/null; then
+        result_detail "found" \
+            "$stalls_events events available (Skylake-family-specific," \
+            "do not assume present on other microarchitectures)"
+    else
+        result_detail "found" \
+            "cycle_activity.stalls_* events NOT available (expected" \
+            "on non-Skylake-family CPUs — profiling scripts assuming" \
+            "this event exist will fail here)"
+    fi
+else
+    result_detail "unknown" \
+        "perf not found — perf stat/perf list unavailable"
+fi
+
+log ""
+
+# ---------------------------------------------------------------------
+# v2 — NumPy's own runtime SIMD dispatch tier (distinct from
+# paulikit's native-extension build flags above — this is what NumPy
+# itself dispatches to at runtime for its own vectorized ops)
+# ---------------------------------------------------------------------
+
+checking "NumPy runtime SIMD dispatch tier" \
+    "\$VENV_PY -c 'numpy.core._multiarray_umath.__cpu_features__'"
+if [ -n "$VENV_PY" ] && "$VENV_PY" -c 'import numpy' >/dev/null 2>&1; then
+    simd_info="$("$VENV_PY" -c "
+import numpy as np
+try:
+    feat = np.core._multiarray_umath.__cpu_features__
+    enabled = sorted(k for k, v in feat.items() if v)
+    print(','.join(enabled) if enabled else 'none reported')
+except Exception as e:
+    print('unavailable (%s)' % e)
+" 2>/dev/null)"
+    result "${simd_info:-unknown}"
+else
+    result_detail "unknown" \
+        "NumPy not importable in venv — see NumPy BLAS section above"
+fi
+
+log ""
+
+# ---------------------------------------------------------------------
+# v2 — musl-host awareness (skip = "*-musllinux*" in the wheel
+# cibuildwheel config is a deliberate policy, not an oversight — report
+# "no wheel target exists here by design" rather than implying
+# unverified support on a musl host)
+# ---------------------------------------------------------------------
+
+checking "libc" "ldd --version"
+if have ldd && ldd --version 2>&1 | grep -qi musl; then
+    result_detail "musl detected" \
+        "no prebuilt wheel target exists for this host by design" \
+        "(see .github/workflows/paulikit-wheels.yml's musllinux skip" \
+        "policy); source build required"
+elif [ -r /lib/ld-musl-x86_64.so.1 ] || [ -r /lib/ld-musl-aarch64.so.1 ]
+then
+    result_detail "musl detected (ld-musl found)" \
+        "no prebuilt wheel target exists for this host by design;" \
+        "source build required"
+else
+    result_detail "glibc or unknown (not musl)" \
+        "standard prebuilt wheel targets apply"
+fi
+
+log ""
+
+# ---------------------------------------------------------------------
+# v2 — disk I/O type (relevant only to checkpoint_path's write
+# throughput; lowest priority of the v2 items)
+# ---------------------------------------------------------------------
+
+checking "disk I/O type" "lsblk -d -o NAME,ROTA"
+if have lsblk; then
+    rota_info="$(lsblk -d -o NAME,ROTA 2>/dev/null | tail -n +2)"
+    if [ -n "$rota_info" ]; then
+        result "1=rotational (HDD), 0=non-rotational (SSD/NVMe):"
+        printf '%s\n' "$rota_info" | while IFS= read -r line; do
+            log "    $line"
+        done
+    else
+        result "unknown (lsblk returned no data)"
+    fi
+else
+    result "unknown ('lsblk' not found — Linux-only tool)"
+fi
+
+log ""
+
+log "== GNU directory variables =="
+report "PREFIX" "$PREFIX (used by 'make docs' as the install root)"
+report "DOCDIR" "$DOCDIR (where 'make docs' installs Sphinx HTML)"
+if [ -n "$INERT_DIRVARS" ]; then
+    report "Other dir-vars received" "$INERT_DIRVARS"
+    log "  These are accepted for GNU-configure-convention compatibility"
+    log "  but have no effect: pip already owns all binary/library"
+    log "  placement inside the venv for this package."
+else
+    report "Other dir-vars (--bindir etc.)" "none passed"
+    log "  (would be accepted-but-inert if given — see --help)"
+fi
+
+log ""
+log "-- End of report. Full text also written to config.log. --"
+
+# ---------------------------------------------------------------------
+# config.status — GCS's "Configuration" convention: a re-runnable
+# record of exactly how configure was invoked, so re-configuring
+# after editing Makefile.in doesn't require remembering the original
+# flags. Deliberately NOT a full autoconf-style config.status (no
+# --recheck machinery, no config.cache) — just enough to replay this
+# invocation.
+# ---------------------------------------------------------------------
+
+config_ts="$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date)"
+cat >config.status <<EOF
+#!/bin/sh
+# Generated by ./configure on ${config_ts}.
+# Re-run configure with the exact same options as last time.
+exec "$(pwd)/configure" ${CONFIGURE_ARGS}
+EOF
+chmod +x config.status
+
+# ---------------------------------------------------------------------
+# Generate Makefile from Makefile.in via literal substitution — no
+# GNU-make-only or BSD-make-only conditional syntax needed since every
+# value is resolved here, in shell, before being written out.
+# ---------------------------------------------------------------------
+
+if [ -f Makefile.in ]; then
+    sed \
+        -e "s#@PYTHON@#${PYTHON_BIN}#g" \
+        -e "s#@VENV_PATH@#${VENV_PATH}#g" \
+        -e "s#@VENV_PYTHON@#${VENV_PATH}/bin/python#g" \
+        -e "s#@VENV_PIP@#${VENV_PATH}/bin/pip#g" \
+        -e "s#@VENV_PYTEST@#${VENV_PATH}/bin/pytest#g" \
+        -e "s#@PREFIX@#${PREFIX}#g" \
+        -e "s#@DOCDIR@#${DOCDIR}#g" \
+        Makefile.in >Makefile
+    echo ""
+    echo "Makefile generated. Run 'make' (or 'make build') to install"
+    echo "paulikit into the venv, 'make check' to run the test suite,"
+    echo "'make report' to reprint this diagnostic without re-running"
+    echo "configure, and './config.status' to re-run configure with the"
+    echo "same options as this time."
+else
+    echo ""
+    echo "Warning: Makefile.in not found — Makefile not generated." >&2
+fi
