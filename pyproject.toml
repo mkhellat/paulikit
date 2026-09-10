@@ -1,0 +1,146 @@
+[build-system]
+requires = ["meson-python>=0.16", "Cython>=3.0", "numpy>=1.24"]
+build-backend = "mesonpy"
+
+[project]
+name = "paulikit"
+version = "0.1.0"
+description = "Pauli-basis decomposition of large operators: fast Walsh-Hadamard transform in C, bounded memory, multi-core"
+readme = "README.md"
+requires-python = ">=3.10"
+license = "GPL-3.0-or-later"
+# Ships the licence TEXT alongside the licence claim above. Without
+# it the built sdist and wheel assert GPL-3.0-or-later while carrying
+# no copy of it, so a PyPI or Zenodo consumer receives source with no
+# licence.
+license-files = ["LICENSE"]
+# Names only, with the project address as the maintainer contact.
+# Giving one author an email and the others none splits them across
+# the Author and Author-Email metadata fields, which renders as two
+# unrelated lists on PyPI. A project address also survives people
+# changing roles and publishes no individual's address.
+authors = [
+    { name = "Mohammadreza Khellat" },
+    { name = "Mohammad Masoumi" },
+    { name = "Saman Nasouri" },
+    { name = "Soroush Nasouri" },
+]
+maintainers = [
+    { name = "paulikit developers", email = "dev@beavernets.com" },
+]
+keywords = [
+    "quantum-computing",
+    "pauli-decomposition",
+    "pauli-matrices",
+    "hamiltonian",
+    "hamiltonian-simulation",
+    "computational-physics",
+    "linear-algebra",
+    "walsh-hadamard-transform",
+    "fwht",
+    "high-performance-computing",
+    "parallel-computing",
+    "performance-engineering",
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "Topic :: Scientific/Engineering :: Physics",
+    "Topic :: Scientific/Engineering :: Mathematics",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: Implementation :: CPython",
+    "Programming Language :: C",
+    # Linux specifically, not "OS Independent": the cache-latency
+    # probe and CPU-feature detection read Linux interfaces, and the
+    # non-Linux fallbacks are not yet exercised in CI. The pure-Python
+    # path is portable; the tested claim is not.
+    "Operating System :: POSIX :: Linux",
+]
+dependencies = [
+    "numpy>=1.24",
+]
+
+[project.optional-dependencies]
+sparse = [
+    "scipy>=1.10",
+]
+test = [
+    "pytest>=7",
+    "pennylane>=0.35",
+    "scipy>=1.10",
+]
+dev = [
+    "pytest>=7",
+    "pennylane>=0.35",
+    "scipy>=1.10",
+    "cython>=3.0",
+    "ruff",
+]
+docs = [
+    "sphinx>=7",
+    "furo",
+    "myst-parser>=2",
+    "sphinx-autodoc-typehints>=2",
+]
+
+[project.urls]
+Homepage = "https://codeberg.org/beavernets/paulikit"
+Repository = "https://codeberg.org/beavernets/paulikit"
+Documentation = "https://codeberg.org/beavernets/paulikit/src/branch/main/docs"
+"Issue tracker" = "https://codeberg.org/beavernets/paulikit/issues"
+
+[project.scripts]
+paulikit = "paulikit.cli:main"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "slow: benchmark and reference comparisons that take minutes to run; excluded by default via addopts below, run them with -m slow",
+]
+addopts = "-m 'not slow'"
+
+[tool.ruff]
+line-length = 92
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.cibuildwheel]
+# Scope for the first release: Linux x86_64 and aarch64, CPython
+# 3.10-3.13. macOS and Windows are covered by the sdist rather than by
+# wheels, because the cache-latency probe and CPU-feature detection
+# read Linux interfaces and their fallbacks are not yet exercised on
+# those platforms. Shipping wheels for a platform nothing tests would
+# claim more than has been verified.
+build = "cp310-* cp311-* cp312-* cp313-*"
+skip = "*_i686 *-win* *-macosx*"
+archs = ["auto64"]
+test-requires = ["pytest>=7"]
+test-command = "pytest {package}/tests -m 'not slow'"
+
+# Gate the wheel on the extensions that carry the performance, not on
+# the one that needs oneTBB.
+#
+# Three of the four extensions - wht_native, coeffs_native and
+# cache_probe - need only a C compiler and Cython, both present in
+# every manylinux image. pauli_label_native additionally needs C++ and
+# oneTBB, which are not, so it may legitimately be absent from a
+# published wheel while the package still works: label generation
+# falls back to pure Python.
+#
+# The transform and coefficient kernels are different. Without them
+# the package silently takes the NumPy path, which is several times
+# slower - a wheel that "succeeded" that way would be a worse outcome
+# than an honest build failure, so it is checked explicitly.
+before-test = "python -c \"from paulikit._native import wht_native, coeffs_native\""
+
+[tool.cibuildwheel.linux]
+# oneTBB is not in the manylinux base image. Installing it lets
+# pauli_label_native build too; if the install fails the build still
+# succeeds without it, which is the intended optional behaviour.
+before-all = "dnf install -y tbb-devel || true"

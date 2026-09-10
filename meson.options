@@ -1,0 +1,39 @@
+option(
+  'native',
+  type: 'feature',
+  value: 'auto',
+  description: 'Build the optional compiled pauli_label fast path (Cython + C + oneTBB). ' +
+               '"auto" builds it if Cython and oneTBB are found, otherwise falls ' +
+               'back to pure Python silently at build time; the first call that ' +
+               'would have used the compiled kernel warns once. Pass ' +
+               '-Dnative=disabled to force pure-Python-only, or -Dnative=enabled ' +
+               'to fail the build if it cannot be built.',
+)
+
+option(
+  'cache_probe',
+  type: 'feature',
+  value: 'auto',
+  description: 'Build the optional compiled cache-latency probe (Cython + C). ' +
+               'Independent of the "native" option above - has no oneTBB ' +
+               'dependency, only needs Cython >= 3.0. "auto" builds it if Cython is found, ' +
+               'otherwise falls back to declared-size cache detection at runtime with a ' +
+               'visible warning. Pass -Dcache_probe=disabled to force the fallback, or ' +
+               '-Dcache_probe=enabled to fail the build if it cannot be built.',
+)
+
+option(
+  'wht_kernel',
+  type: 'feature',
+  value: 'auto',
+  description: 'Build the optional compiled Walsh-Hadamard butterfly and ' +
+               'coefficient kernels (Cython + C). Independent of the "native" ' +
+               'option - these need neither C++ nor oneTBB, only a C compiler ' +
+               'and Cython >= 3.0, so they build on machines where ' +
+               'pauli_label_native cannot. They carry the transform and the ' +
+               'per-term coefficient work, so these are the ones worth having. ' +
+               '"auto" builds them if Cython is found, otherwise falls back to ' +
+               'the pure-Python path. Pass -Dwht_kernel=disabled to force the ' +
+               'fallback, or -Dwht_kernel=enabled to fail the build if they ' +
+               'cannot be built.',
+)
