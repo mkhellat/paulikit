@@ -1,0 +1,17 @@
+paulikit was written by:
+
+    Mohammadreza Khellat
+    Mohammad Masoumi
+    Saman Nasouri
+    Soroush Nasouri
+
+all at Beavernets Technologies.
+
+The citation order, and the metadata to use when citing this software
+in published work, are in CITATION.cff. That file is the authoritative
+record; this one exists because the GNU Coding Standards expect an
+AUTHORS file, and because a reader looking for "who wrote this" should
+not have to know what CITATION.cff is.
+
+Contributors are credited in the git history. Substantial ongoing
+contributors will be added here on request.
