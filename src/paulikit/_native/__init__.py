@@ -1,7 +1,7 @@
 """Internal package: the optional compiled extensions.
 
 Four extensions may be built here, gated by three feature options in
-``meson.options``:
+``meson.options``::
 
     wht_kernel   ``wht_native``         the Walsh-Hadamard butterfly
                  ``coeffs_native``      phase, scaling, thresholding

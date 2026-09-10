@@ -4,15 +4,15 @@ Exact Pauli decomposition of arbitrary complex matrices, at scales
 where materialising the full coefficient set is the binding
 constraint.
 
-Any `2^n x 2^n` complex matrix can be written as a weighted sum over
-the `4^n` `n`-qubit Pauli strings. That decomposition is what turns a
-Hamiltonian into something a quantum algorithm can consume - it is the
-input to linear-combination-of-unitaries (LCU) routines, to
-Hamiltonian simulation, and to variational methods. Computing it is a
-fast Walsh-Hadamard transform, which is well established and cheap in
-theory.
+Any $2^n \times 2^n$ complex matrix can be written as a weighted sum
+over the $4^n$ $n$-qubit Pauli strings. That decomposition is what
+turns a Hamiltonian into something a quantum algorithm can consume —
+it is the input to linear-combination-of-unitaries (LCU) routines,
+to Hamiltonian simulation, and to variational methods. Computing it
+is a fast Walsh-Hadamard transform, which is well established and
+cheap in theory.
 
-The difficulty is not the transform. It is that the output has `4^n`
+The difficulty is not the transform. It is that the output has $4^n$
 entries: at 15 qubits a dense decomposition is over a billion
 coefficients, and implementations that build the result in memory
 before returning it run out of memory long before they run out of
@@ -22,14 +22,14 @@ time.
 
 - **Streaming output.** Peak resident memory is bounded by the chunk
   size, not by the term count, so it stays roughly flat as the problem
-  grows: measured peak resident set is 70 MiB for a 14-qubit
-  decomposition yielding 91,652,096 terms, 88 MiB at 15 qubits
-  (326,134,272 terms) and 121 MiB at 16 qubits (1,470,021,632 terms).
+  grows: measured peak resident set is 72 MiB for a 14-qubit
+  decomposition yielding 91,652,096 terms, 89 MiB at 15 qubits
+  (326,134,272 terms) and 123 MiB at 16 qubits (1,470,021,632 terms).
   An implementation requiring the caller to hold the dense
-  `2^n x 2^n` operator needs 4 GiB, 16 GiB and 64 GiB respectively for
-  the same three sizes.
-- **Exhaustive verification.** Every term is checked individually -
-  not sampled - against an independently derived projection oracle.
+  $2^n \times 2^n$ operator needs 4 GiB, 16 GiB and 64 GiB
+  respectively for the same three sizes.
+- **Exhaustive verification.** Every term is checked individually —
+  not sampled — against an independently derived projection oracle.
 - **Checkpoint and restart.** A binary chunk-framed checkpoint cheap
   enough to leave permanently enabled, so long decompositions survive
   interruption.
@@ -42,7 +42,7 @@ time.
   measurement protocol rather than asserted.
 
 Hermitian and non-Hermitian input are equally supported and take the
-same transform - neither is a degraded path. `assume_hermitian=True`
+same transform — neither is a degraded path. `assume_hermitian=True`
 (the default) additionally returns real rather than complex
 coefficients, and *checks* that the input really is Hermitian rather
 than trusting it; pass `assume_hermitian=False` for general complex
@@ -141,7 +141,7 @@ pytest
 ```
 
 (from this directory; `pyproject.toml` sets `testpaths = ["tests"]`,
-and the package must be installed - `pip install -e ".[test]"` - for
+and the package must be installed — `pip install -e ".[test]"` — for
 imports to resolve).
 
 
@@ -149,9 +149,10 @@ imports to resolve).
 
 ### Fast Walsh-Hadamard Transform (FWHT) — `paulikit.algorithms.fwht`
 
-`O(N² log N)` for an `N×N` matrix — equivalently `O(n·4ⁿ)` for `n`
-qubits, since `N = 2ⁿ`. Note the two symbols differ by an exponential:
-`n` counts qubits everywhere else in this file, `N` is the matrix side.
+$O(N^2 \log N)$ for an $N \times N$ matrix — equivalently
+$O(n \cdot 4^n)$ for $n$ qubits, since $N = 2^n$. Note the two
+symbols differ by an exponential: $n$ counts qubits everywhere else
+in this file, $N$ is the matrix side.
 
 Decomposition by Walsh-Hadamard transform is established practice
 rather than novel — PennyLane and Classiq both use it, and it is
@@ -169,9 +170,11 @@ computation memory-bounded, checkpointable, and verified at scale.
 Unit-level checks on this algorithm (see `tests/test_fwht.py`; the
 whole-package correctness evidence is under **Correctness** below):
 - Against a from-scratch brute-force reference on random Hermitian
-  matrices (n = 1..4 qubits): exact match to floating-point precision.
+  matrices ($n=1..4$ qubits): exact match to floating-point
+  precision.
 - Against `testing.fixtures.ALL_FIXTURES` (real coupled-oscillator
-  Hamiltonians at N=2, N=4): exact label-set and coefficient match.
+  Hamiltonians at $N=2$, $N=4$): exact label-set and coefficient
+  match.
 
 Planned: Tensorized Pauli Decomposition (TPD), PHASE,
 and C-ported variants of whichever algorithm profiling identifies as
@@ -184,16 +187,17 @@ a single module.
 `paulikit`'s output is verified three ways:
 
 - **Exhaustive projection.** Every term of a decomposition is checked
-  individually against an independently derived projection oracle -
-  not sampled - up to 91,652,096 terms at 14 qubits. The oracle
-  computes `Tr(H P+) / dim` directly from the projection formula, so
-  it shares no code path with the transform it checks. Artifacts and
-  method: [`verification/`](verification/).
+  individually against an independently derived projection oracle —
+  not sampled — up to 91,652,096 terms at 14 qubits. The oracle
+  computes $\operatorname{Tr}(H P^{\dagger}) / \text{dim}$ directly
+  from the projection formula, so it shares no code path with the
+  transform it checks. Artifacts and method:
+  [`verification/`](https://codeberg.org/beavernets/paulikit/src/branch/main/verification).
 - **Cross-implementation.** Where PennyLane's `qml.pauli_decompose`
   can also run, both agree exactly on term count and on coefficients
   within tolerance. PennyLane is a test-only dependency and is never
   imported by `paulikit.algorithms`.
-- **Regression suite.** 214 tests, including crash-recovery and
+- **Regression suite.** 234 tests, including crash-recovery and
   checkpoint-format cases.
 
 No performance comparison is published here. Benchmark tables in a
@@ -201,7 +205,7 @@ README go stale as either implementation changes, and any figure worth
 citing has to be replicated, interleaved, thermally controlled and
 tested for significance — which a hand-maintained table cannot
 guarantee over time. Measured figures, the protocol behind them, and
-the raw data live in the project's research record (see Status).
+the raw data are not published in this repository.
 
 
 ## Status
@@ -228,4 +232,4 @@ Known gaps:
 
 ## License
 
-GPL-3.0-or-later. See [`LICENSE`](LICENSE).
+GPL-3.0-or-later. See [`LICENSE`](https://codeberg.org/beavernets/paulikit/src/branch/main/LICENSE).
