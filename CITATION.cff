@@ -1,0 +1,63 @@
+cff-version: 1.2.0
+title: >-
+  paulikit: memory-bounded, checkpointable Pauli decomposition of
+  complex matrices
+message: >-
+  If you use this software, please cite it using the metadata in this
+  file.
+type: software
+# Order is the intended citation order, with the corresponding author
+# first. These are the people credited when the SOFTWARE is cited,
+# which need not be identical to the author list of any paper about
+# it - keep the two in step deliberately rather than by accident.
+authors:
+  - given-names: Mohammadreza
+    family-names: Khellat
+    affiliation: Beavernets Technologies
+  - given-names: Mohammad
+    family-names: Masoumi
+    affiliation: Beavernets Technologies
+  - given-names: Saman
+    family-names: Nasouri
+    affiliation: Beavernets Technologies
+  - given-names: Soroush
+    family-names: Nasouri
+    affiliation: Beavernets Technologies
+repository-code: "https://codeberg.org/beavernets/paulikit"
+# Project contact rather than any individual's address: it survives
+# people changing roles, and a CITATION.cff is archived permanently
+# alongside the DOI.
+contact:
+  - name: paulikit developers
+    email: dev@beavernets.com
+abstract: >-
+  paulikit computes the exact Pauli decomposition of an arbitrary
+  complex matrix via the fast Walsh-Hadamard transform. Hermitian and
+  non-Hermitian input are equally supported and take the same
+  transform; declaring input Hermitian additionally yields real
+  coefficients and checks that assumption rather than trusting it.
+  Both are verified against an independent projection oracle, and at
+  small sizes against PennyLane.
+  The transform itself is established practice; the contribution here
+  is making it usable at scale - a streaming formulation whose peak
+  resident memory is bounded independently of the term count,
+  multi-core execution over independent chunks, a chunk-framed binary
+  checkpoint format cheap enough to leave permanently enabled,
+  cache-aware automatic chunk sizing, and exhaustive per-term
+  verification against an independent projection oracle at up to
+  91,652,096 terms.
+keywords:
+  - Pauli decomposition
+  - fast Walsh-Hadamard transform
+  - quantum Hamiltonian simulation
+  - linear combination of unitaries
+  - memory-bounded algorithms
+  - parallel computing
+  - scientific Python
+  - checkpoint and restart
+license: GPL-3.0-or-later
+version: 0.1.0
+# NOTE: no DOI yet. This is added on the first archived release
+# (Zenodo), and the version above must be bumped to match the tag that
+# is archived. A CITATION.cff claiming a version that was never
+# released is worse than none.
