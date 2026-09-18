@@ -2109,6 +2109,34 @@ def _per_worker_resident_bytes(
     return operator_bytes + setup_arrays_bytes
 
 
+def _resolve_n_workers(n_workers: int | None) -> int:
+    """Shared by ``parallel_decompose`` and ``parallel_decompose_arrays``
+    (previously duplicated verbatim in both, a real maintenance risk
+    found by code review - any future fix to this heuristic would
+    otherwise need applying in two places or silently drift).
+
+    Returns ``n_workers`` unchanged if given explicitly; otherwise
+    caps the auto-detected default to the number of distinct PHYSICAL
+    cores this process may use, not logical CPUs -
+    ``_detect_available_worker_count()`` counts logical CPUs, correct
+    for cgroup/cpuset restrictions but over-counting real parallel
+    capacity for this CPU-bound workload on a hyperthreaded machine.
+    Real measurement found n_workers=2 beats both 4 (physical core
+    count on the 4-core/8-thread dev machine) and 8 (logical CPU
+    count) on wall-clock, and that neither n_workers=4 nor
+    n_workers=8 achieves meaningful isolation without explicit pinning
+    (see ``_physical_core_representative_cpus``) - capping to physical
+    cores is the evidence-based choice here, not a guess. Falls back
+    to the logical-CPU count if the physical-core probe itself is
+    unavailable (non-Linux).
+    """
+    if n_workers is not None:
+        return n_workers
+    logical_default = _detect_available_worker_count()
+    physical_cpus = _physical_core_representative_cpus()
+    return len(physical_cpus) if physical_cpus else logical_default
+
+
 def _recommended_parallel_chunk_size(
     dim: int, n_workers: int, fixed_resident_bytes: int = 0
 ) -> int:
@@ -2268,23 +2296,10 @@ def parallel_decompose(
     n_active = len(active_x)
     z_indices = np.arange(dim)[np.newaxis, :]
 
-    if n_workers is None:
-        # _detect_available_worker_count() counts logical CPUs -
-        # correct for cgroup/cpuset restrictions, but on a
-        # hyperthreaded machine that over-counts real parallel
-        # capacity for this CPU-bound workload. Real measurement
-        # found n_workers=2 beats both 4 (physical core count on the
-        # 4-core/8-thread dev machine) and 8 (logical CPU count) on
-        # wall-clock, and that neither n_workers=4 nor n_workers=8
-        # achieves meaningful isolation without explicit pinning
-        # (added below) - capping the auto-detected default to the
-        # number of distinct PHYSICAL cores (not logical CPUs) is the
-        # evidence-based choice here, not a guess. Falls back to the
-        # logical-CPU count if the physical-core probe itself is
-        # unavailable (non-Linux).
-        logical_default = _detect_available_worker_count()
-        physical_cpus = _physical_core_representative_cpus()
-        n_workers = len(physical_cpus) if physical_cpus else logical_default
+    # See _resolve_n_workers's own docstring for the measurement
+    # behind the physical-core-count default this applies when
+    # n_workers is None.
+    n_workers = _resolve_n_workers(n_workers)
 
     if chunk_size is None:
         fixed_resident_bytes = _per_worker_resident_bytes(
@@ -2296,11 +2311,31 @@ def parallel_decompose(
 
     n_workers = max(1, min(n_workers, max(1, (n_active + chunk_size - 1) // chunk_size)))
 
-    order = np.argsort(inverse, kind="stable")
-    sorted_inverse = inverse[order]
-    sorted_p_nz = p_nz[order]
-    sorted_q_nz = q_nz[order]
-    sorted_values = values_nz[order]
+    # Same fully-dense fast path as parallel_decompose_arrays (see
+    # that function's own comment for the full rationale and the
+    # measurement behind it: this sort was ~40-57% of total time on
+    # dense random Hermitian input before being skipped there).
+    # _parallel_worker_chunk's fast path reads `operator` directly per
+    # chunk and never touches sorted_inverse/sorted_p_nz/sorted_q_nz/
+    # sorted_values in that case, so building them here - and then
+    # pickling them into every worker process via ProcessPoolExecutor's
+    # initargs - is pure waste for dense input, on top of the sort
+    # cost itself.
+    is_fully_dense = (not is_sparse_input) and n_active == dim
+    if is_fully_dense:
+        sorted_inverse = np.empty(0, dtype=inverse.dtype)
+        sorted_p_nz = np.empty(0, dtype=p_nz.dtype)
+        sorted_q_nz = np.empty(0, dtype=q_nz.dtype)
+        sorted_values = np.empty(0, dtype=values_nz.dtype)
+    else:
+        # kind="quicksort", not "stable" - see parallel_decompose_arrays's
+        # own comment: no downstream use needs original-order
+        # preservation within a bucket of equal x-values.
+        order = np.argsort(inverse, kind="quicksort")
+        sorted_inverse = inverse[order]
+        sorted_p_nz = p_nz[order]
+        sorted_q_nz = q_nz[order]
+        sorted_values = values_nz[order]
 
     chunk_starts = list(range(0, n_active, chunk_size))
     completed_indices, checkpoint_frames = _load_parallel_checkpoint(checkpoint_path)
@@ -2518,23 +2553,10 @@ def parallel_decompose_arrays(
     n_active = len(active_x)
     z_indices = np.arange(dim)[np.newaxis, :]
 
-    if n_workers is None:
-        # _detect_available_worker_count() counts logical CPUs -
-        # correct for cgroup/cpuset restrictions, but on a
-        # hyperthreaded machine that over-counts real parallel
-        # capacity for this CPU-bound workload. Real measurement
-        # found n_workers=2 beats both 4 (physical core count on the
-        # 4-core/8-thread dev machine) and 8 (logical CPU count) on
-        # wall-clock, and that neither n_workers=4 nor n_workers=8
-        # achieves meaningful isolation without explicit pinning
-        # (added below) - capping the auto-detected default to the
-        # number of distinct PHYSICAL cores (not logical CPUs) is the
-        # evidence-based choice here, not a guess. Falls back to the
-        # logical-CPU count if the physical-core probe itself is
-        # unavailable (non-Linux).
-        logical_default = _detect_available_worker_count()
-        physical_cpus = _physical_core_representative_cpus()
-        n_workers = len(physical_cpus) if physical_cpus else logical_default
+    # See _resolve_n_workers's own docstring for the measurement
+    # behind the physical-core-count default this applies when
+    # n_workers is None.
+    n_workers = _resolve_n_workers(n_workers)
 
     if chunk_size is None:
         fixed_resident_bytes = _per_worker_resident_bytes(
