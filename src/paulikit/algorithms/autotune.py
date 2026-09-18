@@ -32,13 +32,34 @@ detection more than once. Without this, two threads could both
 observe an empty cache and both invoke the cache-latency probe
 concurrently - a different, untested failure mode (simultaneous
 CPU/cache contention between two probes) than the sequential-pollution
-bug the probe's own warm-up logic is designed against (see
-``cache_probe_idempotency_investigation_findings.md``) - closed here
+bug the probe's own warm-up logic is designed against - closed here
 by construction rather than left as a residual risk. Does not protect
 against separate *processes* racing (each process has its own
-independent cache; that pattern was checked and found safe on its own
-- see the same findings doc - since each process's own first, single
-probe call was independently confirmed reliable).
+independent cache, so there is nothing to race there).
+
+**Empirical-probe reliability**: an earlier version of this docstring
+claimed the probe's first, single call per process was "independently
+confirmed reliable" purely because it is never called a second time in
+the same process. That claim was too narrow and, on direct
+re-measurement, false: a process that does real allocation-heavy work
+(e.g. building and padding a Hamiltonian via
+``paulikit.hamiltonian.build_hamiltonian``/``pad_to_power_of_two``)
+*before* its one and only probe call can still see corrupted timing
+samples at one or two small buffer sizes, which can shift which ratio
+jump ``_detect_l2_boundary_bytes_via_probe`` locks onto and return an
+L2 boundary off by a full binary order of magnitude - confirmed
+directly (roughly 1-in-15 fresh-process trials of that realistic
+calling pattern, on the machine this was investigated on). Widening
+the probe's own warm-up (including a version that only over-warmed the
+small buffer sizes) and raising its repeat-count were both tried and
+neither reliably eliminated it - the fix actually shipped is a
+plausibility check in ``_l2_bytes_or_none``: an empirical result that
+disagrees with the declared ``/sys`` per-core figure by more than 1.5x
+is distrusted and the declared figure is used instead (see that
+function's own comment for the full account, and
+``tests/test_autotune.py``'s
+``test_l2_bytes_rejects_probe_result_wildly_disagreeing_with_declared_size``
+for a reproduction pinned from a real captured failure).
 """
 
 from __future__ import annotations
@@ -235,8 +256,37 @@ def _l2_bytes_or_none() -> int | None:
         else:
             _warn_no_cache_probe()
 
-        if l2_bytes is None:
-            l2_bytes = _declared_l2_size_bytes()
+        declared_bytes = _declared_l2_size_bytes()
+        if l2_bytes is not None and declared_bytes is not None:
+            # Sanity-check the empirical result against /sys's per-core
+            # figure (itself already trusted as the probe's own final
+            # fallback below - see _declared_l2_size_bytes's docstring:
+            # only lscpu's cross-core-aggregated figure was found
+            # unreliable, not /sys's per-core one). A real transient
+            # miscalibration was found and directly reproduced: heavy
+            # allocator/cache activity immediately before the probe's
+            # one-shot call (e.g. building a large Hamiltonian, then
+            # padding it) can corrupt one or two of the probe's small-
+            # buffer timing samples enough to shift which ratio jump
+            # the boundary-detection logic locks onto, landing the
+            # "L2 boundary" an order of magnitude away from the truth
+            # (confirmed empirically: repeated real-Hamiltonian-then-
+            # probe trials produced 262144, 131072, 32768 and 16384 for
+            # the SAME hardware's stable 262144 L2 size). Widening the
+            # probe's own warm-up (targeted extra warm-up for the small
+            # sizes specifically) and raising its repeat-count were
+            # both tried directly and did not reliably eliminate this
+            # - this is a plausibility check on the *result*, not an
+            # attempt to fix the timing measurement itself. A disagreement
+            # of more than 1.5x in either direction is treated as an
+            # implausible measurement and the declared per-core figure
+            # is used instead; legitimate hardware where the true
+            # empirical boundary differs modestly from what /sys
+            # reports is still honored within that tolerance.
+            if not (declared_bytes / 1.5 <= l2_bytes <= declared_bytes * 1.5):
+                l2_bytes = declared_bytes
+        elif l2_bytes is None:
+            l2_bytes = declared_bytes
 
         _cached_l2_bytes = l2_bytes
         return _cached_l2_bytes

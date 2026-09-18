@@ -161,18 +161,26 @@ size_t cache_probe_run(
          * same process, made shortly after a first call already
          * walked a much larger buffer, can see this warm-up as
          * insufficient - stale TLB/cache state from the earlier large
-         * buffer inflates the very next call's small-buffer readings
-         * (investigated and characterized, not fixed here).
-         * Deliberately NOT changed to compensate: the only shipped
-         * caller, autotune.recommended_chunk_size, calls this at most
-         * ONCE per process (module-level cache, see autotune.py) -
-         * every real invocation is a first, isolated call, which was
-         * independently confirmed reliable (10/10 fresh-process
-         * trials in that same investigation). A larger warm-up floor
-         * was tried and found to only partially help (diminishing
-         * returns, rising runtime cost, never fully eliminated) for a
-         * scenario production code cannot reach - reverted rather
-         * than shipped as an unnecessary cost. */
+         * buffer inflates the very next call's small-buffer readings.
+         * The only shipped caller, autotune.recommended_chunk_size,
+         * calls this at most ONCE per process (module-level cache, see
+         * autotune.py), so that specific "second probe call" scenario
+         * doesn't arise in production - but a BROADER version of the
+         * same mechanism does: real allocation-heavy work in the same
+         * process *before* the probe's one and only call (e.g.
+         * building and padding a Hamiltonian) was directly measured to
+         * corrupt small-buffer readings the same way, roughly 1-in-15
+         * fresh-process trials on the machine this was investigated
+         * on. A larger warm-up floor (including a version that only
+         * over-warmed the small buffer sizes specifically) and a
+         * higher repeat-count were both tried directly and neither
+         * reliably eliminated it - not fixed here. The fix that
+         * shipped lives one layer up, in
+         * paulikit.algorithms.autotune._l2_bytes_or_none: it sanity-
+         * checks this probe's result against the declared /sys
+         * per-core L2 figure and distrusts it on gross disagreement,
+         * rather than trying to make the timing measurement itself
+         * immune to whatever transient interference caused it. */
         volatile uint64_t warm_cursor = 0;
         for (uint64_t i = 0; i < n_elems * 3; i++) {
             warm_cursor = buf[warm_cursor];

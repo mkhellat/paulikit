@@ -85,6 +85,88 @@ def test_recommended_chunk_size_respects_floor(monkeypatch):
     assert autotune.recommended_chunk_size(dim=4096) == autotune._min_chunk_size_floor(4096)
 
 
+def test_l2_bytes_rejects_probe_result_wildly_disagreeing_with_declared_size(monkeypatch):
+    # Regression test for a real, directly-reproduced instability: right
+    # after a real Hamiltonian build (build_hamiltonian + pad_to_power_of_two,
+    # the realistic calling pattern every real caller uses - not the
+    # probe in isolation), the empirical probe's own timing samples can
+    # be transiently corrupted enough at one or two small buffer sizes
+    # that the ratio-jump boundary-detection logic in
+    # _detect_l2_boundary_bytes_via_probe locks onto the wrong jump,
+    # returning an L2 boundary off by a full binary order of magnitude
+    # (observed directly: 32768, 16384 and 131072 instead of the
+    # machine's real, stable 262144). This exact corrupted 13-sample
+    # trace (buffer_size_bytes, cycles_per_access) was captured from a
+    # real failing run: the 32768- and 65536-byte samples (indices 2
+    # and 3) are transiently inflated to ~37/~54 cycles/access (true
+    # baseline ~5-7), producing two consecutive spurious ratio jumps
+    # that consume what the detection logic treats as boundaries #1 and
+    # #2, so it returns the spike's own buffer size (32768) instead of
+    # the true L1/L2 boundary (262144) - the real L2/L3 jump at index 6
+    # is pushed to "boundary #3" and never used.
+    wrong_boundary_samples = [
+        (8192, 5.511806666666667), (16384, 5.52993), (32768, 36.72795),
+        (65536, 54.14745), (131072, 18.769943333333334),
+        (262144, 14.370496666666666), (524288, 22.988286666666667),
+        (1048576, 26.494323333333334), (2097152, 21.968056666666666),
+        (4194304, 21.417743333333334), (8388608, 64.64729),
+        (16777216, 198.78389333333334), (33554432, 237.41949),
+    ]
+
+    class _FakeCacheProbeWrong:
+        @staticmethod
+        def probe_cache_boundaries():
+            return wrong_boundary_samples
+
+    monkeypatch.setattr(autotune, "_cache_probe", _FakeCacheProbeWrong)
+    monkeypatch.setattr(autotune, "_declared_l2_size_bytes", lambda: 256 * 1024)
+
+    # Confirm the raw (unprotected) detection really would have been
+    # wrong here, so this test is actually exercising the fix and not
+    # a case that happened to already agree.
+    raw_detected = autotune._detect_l2_boundary_bytes_via_probe()
+    assert raw_detected != 256 * 1024, (
+        "test fixture must reproduce a genuine empirical misdetection "
+        "for this regression test to be meaningful"
+    )
+
+    assert autotune._l2_bytes_or_none() == 256 * 1024, (
+        "an empirical L2 boundary that disagrees with the declared /sys "
+        "per-core figure by more than the tolerance must fall back to "
+        "the declared figure rather than trusting the corrupted probe "
+        "result"
+    )
+
+
+def test_l2_bytes_trusts_probe_result_within_tolerance_of_declared_size(monkeypatch):
+    # The sanity check must not reject a *plausible* empirical result
+    # just because it differs modestly from the declared figure - only
+    # gross (>1.5x) disagreement should trigger the fallback, preserving
+    # the probe's whole reason for existing (declared sizes can
+    # themselves be wrong/ambiguous on some hardware).
+    samples = [
+        (8192, 5.0), (16384, 4.8), (32768, 4.9), (65536, 6.8),
+        (131072, 6.9), (262144, 7.5), (524288, 21.4), (1048576, 26.6),
+        (2097152, 22.2), (4194304, 21.9), (8388608, 34.9),
+        (16777216, 196.5), (33554432, 244.8),
+    ]
+
+    class _FakeCacheProbe:
+        @staticmethod
+        def probe_cache_boundaries():
+            return samples
+
+    monkeypatch.setattr(autotune, "_cache_probe", _FakeCacheProbe)
+    # Declared figure close to (but not exactly) the true empirical
+    # 262144 result - within 1.5x tolerance either way.
+    monkeypatch.setattr(autotune, "_declared_l2_size_bytes", lambda: 300 * 1024)
+
+    assert autotune._l2_bytes_or_none() == 262144, (
+        "a plausible empirical result within tolerance of the declared "
+        "figure must be trusted, not overridden"
+    )
+
+
 @pytest.mark.parametrize(
     ("dim", "expected"),
     [
