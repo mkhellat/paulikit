@@ -16,10 +16,32 @@ from __future__ import annotations
 import numpy as np
 from numpy.typing import NDArray
 
-try:
-    import scipy.sparse as _sp
-except ImportError:
-    _sp = None
+# scipy.sparse is imported LAZILY, not at module load time. Measured
+# directly (perf stat instructions:u): `import scipy.sparse` alone
+# costs several hundred million instructions on top of bare NumPy -
+# paid previously by every caller of this module, including every
+# caller who only ever passes sparse=False (the default) and never
+# touches scipy at all. Both functions below already take `sparse` as
+# an explicit, caller-controlled parameter defaulting to False, so
+# there is no need for any duck-typing to decide whether scipy is
+# needed - the parameter already says so.
+_sp = None
+_sp_import_attempted = False
+
+
+def _scipy_sparse_module():
+    """Returns the ``scipy.sparse`` module, importing it on first call
+    and caching the result (including the "not installed" case, so a
+    missing scipy is retried at most once, not on every call)."""
+    global _sp, _sp_import_attempted
+    if not _sp_import_attempted:
+        _sp_import_attempted = True
+        try:
+            import scipy.sparse as sp_module
+            _sp = sp_module
+        except ImportError:
+            _sp = None
+    return _sp
 
 
 def build_hamiltonian(
@@ -69,7 +91,8 @@ def build_hamiltonian(
         (the ``if i < 2`` branches below). That is a property of this
         encoding of the physical problem, not an oversight.
     """
-    if sparse and _sp is None:
+    sp_module = _scipy_sparse_module() if sparse else None
+    if sparse and sp_module is None:
         raise ImportError(
             "sparse=True requires scipy, which is not installed. "
             "Install it via `pip install paulikit[sparse]`."
@@ -120,7 +143,7 @@ def build_hamiltonian(
                 cols += [n + n + col_offset, i]
                 values += [coupling, coupling]
 
-    return _sp.coo_matrix((values, (rows, cols)), shape=(size, size))
+    return sp_module.coo_matrix((values, (rows, cols)), shape=(size, size))
 
 
 def pad_to_power_of_two(
@@ -155,7 +178,8 @@ def pad_to_power_of_two(
         a ``numpy.ndarray`` if ``sparse=False``, a
         ``scipy.sparse.coo_matrix`` if ``sparse=True``.
     """
-    if sparse and _sp is None:
+    sp_module = _scipy_sparse_module() if sparse else None
+    if sparse and sp_module is None:
         raise ImportError(
             "sparse=True requires scipy, which is not installed. "
             "Install it via `pip install paulikit[sparse]`."
@@ -171,5 +195,5 @@ def pad_to_power_of_two(
         return padded, n_qubits
 
     coo = matrix.tocoo()
-    padded = _sp.coo_matrix((coo.data, (coo.row, coo.col)), shape=(dim, dim))
+    padded = sp_module.coo_matrix((coo.data, (coo.row, coo.col)), shape=(dim, dim))
     return padded, n_qubits

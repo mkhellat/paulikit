@@ -98,10 +98,41 @@ try:
 except ImportError:
     _gather_native = None
 
-try:
-    import scipy.sparse as _sp
-except ImportError:
-    _sp = None
+# scipy.sparse is imported LAZILY (see _scipy_sparse_module below),
+# not at module load time like the extensions above. Measured
+# directly (perf stat instructions:u): `import scipy.sparse` alone
+# costs ~456M instructions on top of bare NumPy - more than the
+# entire remaining decomposition costs on real dense input, and paid
+# by every caller of this module regardless of whether they ever pass
+# sparse input, since it previously ran unconditionally at import
+# time. pauli_lcu, by contrast, never imports scipy at all (measured:
+# its own import cost is indistinguishable from bare NumPy's). This
+# was the dominant, previously-uncounted cost behind the whole
+# dense-vs-pauli_lcu comparison in this investigation - every earlier
+# measurement in the performance-investigation plan/PLAN.md already
+# paid this cost once per subprocess, in EVERY condition (paulikit
+# baseline included), so it did not show up as a per-call regression,
+# only as a large constant both this module's own baseline and its
+# full runs shared - which is exactly why comparing total instruction
+# counts end-to-end (rather than isolating import cost first) missed
+# it for this entire investigation until checked directly.
+_sp = None
+_sp_import_attempted = False
+
+
+def _scipy_sparse_module():
+    """Returns the ``scipy.sparse`` module, importing it on first call
+    and caching the result (including the "not installed" case, so a
+    missing scipy is retried at most once, not on every call)."""
+    global _sp, _sp_import_attempted
+    if not _sp_import_attempted:
+        _sp_import_attempted = True
+        try:
+            import scipy.sparse as sp_module
+            _sp = sp_module
+        except ImportError:
+            _sp = None
+    return _sp
 
 
 _POPCOUNT_BYTE_LUT = np.array([bin(i).count("1") for i in range(256)], dtype=np.uint8)
@@ -883,7 +914,20 @@ def _prepare_operator_for_fwht(operator, assume_dense=False):
     # indexing returns a
     # numpy.matrix of shape (1, nnz) rather than a flat (nnz,) array,
     # which is why callers' gathers go through np.asarray(...).ravel().
-    is_sparse_input = _sp is not None and _sp.issparse(operator)
+    # A plain ndarray is never a scipy.sparse matrix - checking that
+    # first, with no import at all, is what makes the scipy.sparse
+    # import genuinely lazy for the (overwhelming majority) common
+    # case rather than merely moved from module-import time to
+    # first-call time. Only an operator that is NOT a plain ndarray
+    # (e.g. actually IS scipy.sparse, or some other array-like) pays
+    # the import, and even then only once per process
+    # (_scipy_sparse_module caches it, including the "not installed"
+    # case).
+    if isinstance(operator, np.ndarray):
+        is_sparse_input = False
+    else:
+        sp_module = _scipy_sparse_module()
+        is_sparse_input = sp_module is not None and sp_module.issparse(operator)
     if is_sparse_input:
         # COO (e.g. from pad_to_power_of_two(..., sparse=True)) does
         # not support fancy indexing (operator[p_nz, q_nz]) - CSR
