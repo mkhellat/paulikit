@@ -2362,7 +2362,16 @@ def parallel_decompose(
     import multiprocessing
     from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
 
-    from paulikit.algorithms import autotune
+    # NOTE: `autotune` is NOT imported here - `_recommended_parallel_chunk_size`
+    # (called below only when chunk_size is None) already imports it
+    # lazily itself. An unconditional import here was pure dead weight:
+    # autotune's own first-import cost (measured ~9-20M instructions,
+    # dominated by the compiled cache_probe extension) was paid on
+    # EVERY call to this function regardless of whether chunk_size was
+    # ever actually auto-computed - the same class of bug the
+    # scipy.sparse lazy-import fix addressed earlier in this
+    # investigation, found by the same instructions:u-driven work
+    # analysis.
 
     (
         operator, is_sparse_input, dim, n_qubits, p_nz, q_nz, x_nz, values_nz
@@ -2594,7 +2603,9 @@ def parallel_decompose_arrays(
         FIRST_COMPLETED, ProcessPoolExecutor, ThreadPoolExecutor, wait,
     )
 
-    from paulikit.algorithms import autotune
+    # NOTE: `autotune` is NOT imported here - see parallel_decompose's
+    # own identical note. `_recommended_parallel_chunk_size` (called
+    # below only when chunk_size is None) already imports it lazily.
 
     if executor not in ("auto", "process", "thread"):
         raise ValueError(
@@ -2644,6 +2655,59 @@ def parallel_decompose_arrays(
         )
 
     n_workers = max(1, min(n_workers, max(1, (n_active + chunk_size - 1) // chunk_size)))
+
+    # SINGLE-WORKER FAST PATH: skip the executor entirely.
+    #
+    # With n_workers == 1 there is nothing to parallelize -
+    # ThreadPoolExecutor still pays for a worker thread, a Future per
+    # chunk, wait(FIRST_COMPLETED), and the submit/result bookkeeping,
+    # none of which buys anything when only one chunk is ever
+    # in flight. Falsified directly before building this (per instinct
+    # from the user: "could not we get rid of that by creating a
+    # dedicated singlecore path... test that first, falsification
+    # first, right?") - a synchronous loop over _parallel_worker_chunk
+    # with no executor at all measured 22.4% fewer instructions than
+    # the threaded path at n_workers=1 on dense random Hermitian input
+    # (perf stat instructions:u, dim=1024: 2.104e8 -> 1.633e8).
+    #
+    # Rather than build a THIRD per-chunk body, this delegates to
+    # `_iter_chunked_coefficients` - the sequential streaming API's own
+    # generator (already fixed with the identical is_fully_dense fast
+    # path, see fwht_pauli_coefficients), which turned out to be
+    # LEANER than the throwaway synchronous-loop test above (1.539e8 -
+    # no _parallel_worker_state global save/restore dance, no
+    # ProcessPoolExecutor-shaped state dict to build for a case that
+    # will never use it). Same (x, z, coeff) yield contract as this
+    # function's own, so no chunk-level transformation is needed - only
+    # the checkpoint and Hermiticity-check wrapping this function's own
+    # contract already does around every other branch.
+    #
+    # Gated on `checkpoint_path is None` too: `_iter_chunked_coefficients`
+    # uses `_load_checkpoint`/`_append_checkpoint_chunk` (the
+    # SEQUENTIAL checkpoint format - a distinct progress-file suffix,
+    # see `_checkpoint_progress_path`'s own docstring for why the two
+    # formats never collide), not this function's own
+    # `_load_parallel_checkpoint`/`_append_parallel_checkpoint_chunk`.
+    # A caller who checkpoints across multiple calls at different
+    # `n_workers` values (e.g. resuming at n_workers=1 a run that
+    # crashed at n_workers=4) would silently fail to find their
+    # existing checkpoint if this fast path used it unconditionally -
+    # not data corruption, but surprising, avoidable redundant
+    # recomputation. Falling through to the executor path (with its
+    # own, already-correct checkpoint handling) whenever checkpointing
+    # is requested at all sidesteps the question entirely, at the cost
+    # of this fast path only applying to the common uncheckpointed case.
+    if n_workers == 1 and checkpoint_path is None:
+        for chunk_x, chunk_z, chunk_coeff in _iter_chunked_coefficients(
+            operator, is_sparse_input, active_x, inverse, p_nz, q_nz, values_nz,
+            dim, n_qubits, n_active, z_indices, chunk_size, atol, checkpoint_path,
+        ):
+            if assume_hermitian:
+                _check_hermitian_violation(
+                    chunk_coeff, atol, chunk_x, chunk_z, n_qubits
+                )
+            yield chunk_x, chunk_z, chunk_coeff
+        return
 
     is_fully_dense = (not is_sparse_input) and n_active == dim
     if is_fully_dense:
