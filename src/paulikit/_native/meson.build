@@ -89,6 +89,35 @@ else
   message('paulikit: wht_native disabled via -Dwht_kernel=disabled')
 endif
 
+# The fully-dense per-chunk XOR-gather kernel - reads
+# gathered_chunk[row, q] = operator[x_row ^ q, q] directly, replacing
+# the NumPy fancy-index gather paulikit.algorithms.fwht's fully-dense
+# fast path used. Same C-and-Cython-only dependency set as the WHT
+# kernel and shares its option: this is upstream of the transform
+# (gather, then transform, then emit), so there is no case for
+# building it without the other two.
+if not wht_opt.disabled() and have_cython and have_c
+  cy5 = meson.get_compiler('cython')
+
+  if cy5.version().version_compare('>=3.0')
+    np_include_gather = run_command(
+      py, ['-c', 'import numpy; print(numpy.get_include())'],
+      check: true,
+    ).stdout().strip()
+
+    py.extension_module(
+      'gather_native',
+      [
+        'gather_native.pyx',
+        'gather.c',
+      ],
+      include_directories: include_directories('.', np_include_gather, is_system: true),
+      install: true,
+      subdir: 'paulikit/_native',
+    )
+  endif
+endif
+
 # The fused coefficient kernel - phase factor,
 # scaling, thresholding and index emission in one pass. Same
 # C-and-Cython-only dependency set as the WHT kernel above, and shares
