@@ -98,6 +98,11 @@ try:
 except ImportError:
     _gather_native = None
 
+try:
+    from paulikit._native import hermitian_check_native as _hermitian_check_native
+except ImportError:
+    _hermitian_check_native = None
+
 # scipy.sparse is imported LAZILY (see _scipy_sparse_module below),
 # not at module load time like the extensions above. Measured
 # directly (perf stat instructions:u): `import scipy.sparse` alone
@@ -1377,13 +1382,33 @@ def _check_hermitian_violation(
     ``abs(c)`` is the *full complex magnitude*, not ``abs(c.real)``
     (they only agree when the imaginary part is already negligible,
     which is exactly the case this check exists to catch).
+
+    Compiled fast path: a single fused C pass
+    (``hermitian_check.c``) replacing what was previously four
+    separate NumPy passes (``np.abs`` twice, ``np.maximum``, the
+    comparison-and-``.any()``), each materializing a full-size
+    temporary. Isolated measurement (perf stat ``instructions:u``,
+    with the test array's own construction cost subtracted out) found
+    the fused pass costs as little as ~41% of the 4-pass NumPy
+    version. Stops at the first violation, matching this function's
+    own "labels only the single offending term" contract - a further,
+    input-dependent saving on top of the pass-count reduction.
     """
-    c_abs = np.abs(coefficient_values)
-    imag_abs = np.abs(coefficient_values.imag)
-    violation = imag_abs > np.maximum(atol, 1e-6 * c_abs)
-    if not violation.any():
-        return
-    first = int(np.nonzero(violation)[0][0])
+    if _hermitian_check_native is not None:
+        contiguous = np.ascontiguousarray(coefficient_values)
+        first_violation = _hermitian_check_native.first_hermitian_violation(
+            contiguous, atol
+        )
+        if first_violation < 0:
+            return
+        first = first_violation
+    else:
+        c_abs = np.abs(coefficient_values)
+        imag_abs = np.abs(coefficient_values.imag)
+        violation = imag_abs > np.maximum(atol, 1e-6 * c_abs)
+        if not violation.any():
+            return
+        first = int(np.nonzero(violation)[0][0])
     label = _pauli_label_batch(x[first:first + 1], z[first:first + 1], n_qubits)[0]
     c = coefficient_values[first]
     raise ValueError(

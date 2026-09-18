@@ -118,6 +118,35 @@ if not wht_opt.disabled() and have_cython and have_c
   endif
 endif
 
+# The Hermiticity-violation check kernel - a single fused pass over a
+# chunk's surviving coefficients, replacing four separate NumPy passes
+# (np.abs, np.abs, np.maximum, compare-and-any). Same
+# C-and-Cython-only dependency set as the other kernels above and
+# shares their option; used by both the sparse and dense input paths
+# (fwht.py falls back to the NumPy 4-pass check if this module is
+# absent, with identical results either way).
+if not wht_opt.disabled() and have_cython and have_c
+  cy6 = meson.get_compiler('cython')
+
+  if cy6.version().version_compare('>=3.0')
+    np_include_herm = run_command(
+      py, ['-c', 'import numpy; print(numpy.get_include())'],
+      check: true,
+    ).stdout().strip()
+
+    py.extension_module(
+      'hermitian_check_native',
+      [
+        'hermitian_check_native.pyx',
+        'hermitian_check.c',
+      ],
+      include_directories: include_directories('.', np_include_herm, is_system: true),
+      install: true,
+      subdir: 'paulikit/_native',
+    )
+  endif
+endif
+
 # The fused coefficient kernel - phase factor,
 # scaling, thresholding and index emission in one pass. Same
 # C-and-Cython-only dependency set as the WHT kernel above, and shares
