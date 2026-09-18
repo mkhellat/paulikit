@@ -798,17 +798,41 @@ def _iter_chunked_coefficients(
     # - but it hoists the reciprocal out of the per-chunk loop and
     # turns a per-term division into a per-term multiply.
     inv_dim = 1.0 / dim
-    # inverse is sorted first so each chunk's nonzero entries
-    # (p_nz[lo:hi], q_nz[lo:hi]) are a contiguous slice, found via
-    # searchsorted on chunk boundaries - avoiding an O(nnz) boolean
-    # mask per chunk.
-    order = np.argsort(inverse, kind="stable")
-    sorted_inverse = inverse[order]
-    sorted_p_nz = p_nz[order]
-    sorted_q_nz = q_nz[order]
-    # The values follow the same permutation, so each chunk's slice
-    # is contiguous and no per-chunk operator lookup is needed.
-    sorted_values = values_nz[order]
+
+    # FULLY DENSE fast path (same as _parallel_worker_chunk /
+    # parallel_decompose_arrays - see their own comments for the full
+    # rationale, the structural proof of why this is always correct,
+    # and the measurement behind it). When every cell of `operator` is
+    # nonzero, active_x is provably arange(dim) and each chunk can be
+    # gathered directly as operator[x^q, q] with no dependency on any
+    # global sort at all - skips the O(dim**2 log dim) argsort AND the
+    # per-chunk np.zeros-and-scatter entirely. This generator is the
+    # shared body `fwht_pauli_coefficients`/`fwht_pauli_terms_iter`
+    # both call - before this fix, NEITHER of those public entry
+    # points had received any of this optimization, unlike
+    # parallel_decompose_arrays and parallel_decompose, which did
+    # earlier in the same investigation - a real, measured gap (perf
+    # stat instructions:u): the unfixed sequential path cost ~6.48x
+    # pauli_lcu's own decomposition, vs ~1.95x for the already-fixed
+    # parallel path, on identical dense random Hermitian input.
+    is_fully_dense = (not is_sparse_input) and n_active == dim
+    if is_fully_dense:
+        sorted_inverse = sorted_p_nz = sorted_q_nz = sorted_values = None
+    else:
+        # inverse is sorted first so each chunk's nonzero entries
+        # (p_nz[lo:hi], q_nz[lo:hi]) are a contiguous slice, found via
+        # searchsorted on chunk boundaries - avoiding an O(nnz) boolean
+        # mask per chunk. kind="quicksort", not "stable" - see
+        # parallel_decompose_arrays's own comment: no downstream use
+        # needs original-order preservation within a bucket of equal
+        # x-values.
+        order = np.argsort(inverse, kind="quicksort")
+        sorted_inverse = inverse[order]
+        sorted_p_nz = p_nz[order]
+        sorted_q_nz = q_nz[order]
+        # The values follow the same permutation, so each chunk's slice
+        # is contiguous and no per-chunk operator lookup is needed.
+        sorted_values = values_nz[order]
 
     chunk_starts = list(range(0, n_active, chunk_size))
     resume_from, checkpoint_frames = _load_checkpoint(checkpoint_path)
@@ -824,18 +848,32 @@ def _iter_chunked_coefficients(
     for chunk_index in range(resume_from, len(chunk_starts)):
         chunk_start = chunk_starts[chunk_index]
         chunk_end = min(chunk_start + chunk_size, n_active)
-        lo = int(np.searchsorted(sorted_inverse, chunk_start))
-        hi = int(np.searchsorted(sorted_inverse, chunk_end))
 
-        gathered_chunk = np.zeros((chunk_end - chunk_start, dim), dtype=complex)
-        # A slice of the pre-extracted values, not a fresh operator
-        # lookup: the scipy fancy-index call this replaces cost 45.4us
-        # per chunk to fetch ~64 values at the N=150 shape - CSR index
-        # validation overhead, paid thousands of times.
-        gathered_values = sorted_values[lo:hi]
-        gathered_chunk[
-            sorted_inverse[lo:hi] - chunk_start, sorted_q_nz[lo:hi]
-        ] = gathered_values
+        if is_fully_dense:
+            if _gather_native is not None:
+                gathered_chunk = _gather_native.gather_dense_chunk(
+                    operator, chunk_start, chunk_end - chunk_start
+                )
+            else:
+                x_values = np.arange(chunk_start, chunk_end)
+                q_range = z_indices[0]
+                p_indices = x_values[:, np.newaxis] ^ q_range[np.newaxis, :]
+                gathered_chunk = np.ascontiguousarray(
+                    operator[p_indices, q_range[np.newaxis, :]]
+                )
+        else:
+            lo = int(np.searchsorted(sorted_inverse, chunk_start))
+            hi = int(np.searchsorted(sorted_inverse, chunk_end))
+
+            gathered_chunk = np.zeros((chunk_end - chunk_start, dim), dtype=complex)
+            # A slice of the pre-extracted values, not a fresh operator
+            # lookup: the scipy fancy-index call this replaces cost 45.4us
+            # per chunk to fetch ~64 values at the N=150 shape - CSR index
+            # validation overhead, paid thousands of times.
+            gathered_values = sorted_values[lo:hi]
+            gathered_chunk[
+                sorted_inverse[lo:hi] - chunk_start, sorted_q_nz[lo:hi]
+            ] = gathered_values
 
         transformed_chunk = _walsh_hadamard_transform_rows(
             gathered_chunk, overwrite_input=True
@@ -1057,6 +1095,7 @@ def fwht_pauli_coefficients(
     chunk_size: int | None = None,
     atol: float = 1e-10,
     checkpoint_path: str | Path | None = None,
+    assume_dense: bool = False,
 ) -> (
     NDArray[np.complexfloating]
     | tuple[NDArray[np.intp], NDArray[np.complexfloating]]
@@ -1164,11 +1203,19 @@ def fwht_pauli_coefficients(
     Raises:
         ValueError: If ``operator`` is not square or its dimension is
             not a power of two.
+
+    ``assume_dense`` (default ``False``): same meaning as
+    ``parallel_decompose_arrays``'s own parameter of the same name -
+    skips the ``np.nonzero`` sparsity-DETECTION scan when ``True`` and
+    ``operator`` is a plain ndarray. See that function's docstring for
+    the full rationale and the measurement behind it (a pure
+    performance choice, not a correctness risk - correct for any
+    actual sparsity pattern).
     """
     (
         operator, is_sparse_input, dim, n_qubits, p_nz, q_nz, x_nz, values_nz
     ) = _prepare_operator_for_fwht(
-        operator
+        operator, assume_dense=assume_dense
     )
     active_x, inverse = _active_x_and_inverse(x_nz, dim)
     n_active = len(active_x)
@@ -1494,6 +1541,7 @@ def fwht_pauli_terms_iter(
     assume_hermitian: bool = True,
     checkpoint_path: str | Path | None = None,
     parallel_labels: bool = False,
+    assume_dense: bool = False,
 ) -> Iterator[dict[str, complex] | dict[str, float]]:
     """Streaming counterpart to ``fwht_pauli_terms``. Yields one
     ``dict`` of terms per chunk instead of building one combined
@@ -1583,11 +1631,15 @@ def fwht_pauli_terms_iter(
             ``assume_hermitian=True`` and a term in the current chunk
             has a non-negligible imaginary part - see the
             ``assume_hermitian`` parameter above.
+
+    ``assume_dense`` (default ``False``): same meaning as
+    ``parallel_decompose_arrays``'s own parameter of the same name -
+    see that function's docstring for the full rationale.
     """
     (
         operator, is_sparse_input, dim, n_qubits, p_nz, q_nz, x_nz, values_nz
     ) = _prepare_operator_for_fwht(
-        operator
+        operator, assume_dense=assume_dense
     )
     active_x, inverse = _active_x_and_inverse(x_nz, dim)
     n_active = len(active_x)
