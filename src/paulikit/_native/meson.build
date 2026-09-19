@@ -58,6 +58,24 @@ endif
 # pure-Python butterfly if it is absent.
 wht_opt = get_option('wht_kernel')
 
+# x86-64-v3 (AVX2 + BMI2 + FMA + POPCNT) compiler flag, used below to
+# build a second copy of the WHT and coefficient kernels alongside the
+# baseline ones. Same source, compiled twice under different module
+# names - fwht.py picks between them at import time based on a runtime
+# CPU-flags check (see _cpu_has_x86_64_v3 there), never at build time,
+# since a wheel built on one machine may run on an older one. Checked
+# with has_multi_arguments rather than assumed available: some cross
+# compilers or exotic toolchains may not support this flag at all, and
+# that must degrade to "just don't build the _v3 variant" rather than
+# fail the whole build - the baseline kernel alone is still correct
+# and was the only option before this change existed.
+v3_args = ['-march=x86-64-v3']
+have_v3_isa = false
+if not wht_opt.disabled() and have_c
+  cc = meson.get_compiler('c')
+  have_v3_isa = cc.has_multi_arguments(v3_args)
+endif
+
 if not wht_opt.disabled() and have_cython and have_c
   cy3 = meson.get_compiler('cython')
   cython_ok3 = cy3.version().version_compare('>=3.0')
@@ -78,6 +96,34 @@ if not wht_opt.disabled() and have_cython and have_c
       install: true,
       subdir: 'paulikit/_native',
     )
+
+    if have_v3_isa
+      # Cython embeds the extension's PyInit_<name> symbol from the
+      # .pyx module name at Cython-compile time, not from the meson
+      # target name below - compiling the same wht_native.pyx twice
+      # without this would produce two .so files that both export
+      # PyInit_wht_native, so only whichever one Python's import
+      # machinery finds first would actually load (found the hard
+      # way: the CPU-capable branch silently imported the baseline
+      # module). --module-name overrides what Cython embeds so the
+      # resulting symbol matches this target's real name.
+      py.extension_module(
+        'wht_native_v3',
+        [
+          'wht_native.pyx',
+          'wht.c',
+        ],
+        cython_args: ['--module-name', 'wht_native_v3'],
+        c_args: v3_args,
+        include_directories: include_directories('.', np_include_wht, is_system: true),
+        install: true,
+        subdir: 'paulikit/_native',
+      )
+    else
+      message('paulikit: wht_native_v3 not built (compiler does not ' +
+              'accept -march=x86-64-v3) - falling back to wht_native ' +
+              'at import time on CPUs that support it')
+    endif
   elif wht_opt.enabled()
     error('WHT kernel explicitly requested (-Dwht_kernel=enabled) but ' +
           'Cython >= 3.0 was not found')
@@ -171,6 +217,37 @@ if not wht_opt.disabled() and have_cython and have_c
       install: true,
       subdir: 'paulikit/_native',
     )
+
+    # Second copy at x86-64-v3: coeffs.c's popcount macro
+    # (__builtin_popcountll) only lowers to the real POPCNT
+    # instruction when the compiler is told the target has it: this
+    # flag is what makes that happen. Measured directly this session:
+    # ~44% fewer instructions, ~39-59% fewer cycles than the
+    # SWAR-emulated baseline at this kernel's real per-chunk shape -
+    # the single largest compiled-kernel win found in this
+    # investigation. have_v3_isa is computed once above, shared with
+    # the WHT kernel's own _v3 variant.
+    if have_v3_isa
+      # See wht_native_v3's own comment above: --module-name is
+      # required so this variant's compiled-in PyInit_ symbol matches
+      # its own target name rather than colliding with coeffs_native's.
+      py.extension_module(
+        'coeffs_native_v3',
+        [
+          'coeffs_native.pyx',
+          'coeffs.c',
+        ],
+        cython_args: ['--module-name', 'coeffs_native_v3'],
+        c_args: v3_args,
+        include_directories: include_directories('.', np_include_coeffs, is_system: true),
+        install: true,
+        subdir: 'paulikit/_native',
+      )
+    else
+      message('paulikit: coeffs_native_v3 not built (compiler does not ' +
+              'accept -march=x86-64-v3) - falling back to coeffs_native ' +
+              'at import time on CPUs that support it')
+    endif
   endif
 endif
 

@@ -84,10 +84,60 @@ try:
 except ImportError:
     _native = None
 
-try:
-    from paulikit._native import wht_native as _wht_native
-except ImportError:
-    _wht_native = None
+def _cpu_has_x86_64_v3() -> bool:
+    """Best-effort check for the x86-64-v3 feature set (AVX2, BMI2,
+    FMA, POPCNT - what ``-march=x86-64-v3`` requires the CPU to
+    support), used to pick between the baseline and ``_v3`` compiled
+    kernel variants below.
+
+    Reads ``/proc/cpuinfo``'s ``flags`` line. This is Linux/glibc-only,
+    matching the existing bias of this package's native layer (see
+    ``wht.c``'s ``sysconf(_SC_LEVEL1_DCACHE_SIZE)``, also a glibc
+    extension with a silent, safe fallback elsewhere). Returns False -
+    the safe choice, since it only ever skips an optimization, never
+    causes a wrong dispatch - on any platform or parse failure.
+
+    TODO(portability): this has no answer on non-Linux platforms (no
+    ``/proc/cpuinfo`` at all) or on non-glibc Linux where the format
+    may differ; it silently falls back to the baseline kernel there
+    rather than actually detecting the CPU. A CPUID-based C probe
+    (portable, no ``/proc`` dependency) would close that gap - left
+    for whoever picks this up next, since it needs its own new
+    optional/fallback compiled extension and this project already has
+    a working, simpler path for the Linux case that matters today.
+    """
+    try:
+        with open("/proc/cpuinfo") as f:
+            for line in f:
+                if line.startswith("flags"):
+                    flags = set(line.split(":", 1)[1].split())
+                    return {"avx2", "bmi2", "fma", "popcnt"} <= flags
+    except OSError:
+        pass
+    return False
+
+
+_HAS_X86_64_V3 = _cpu_has_x86_64_v3()
+
+# Three-tier fallback, resolved once at import time: the AVX2/POPCNT-
+# enabled ``_v3`` variant (same C source as the baseline, compiled a
+# second time with ``-march=x86-64-v3``; see meson.build) when the CPU
+# supports it and the variant was built, else the baseline compiled
+# kernel, else pure Python. Resolved once per process and never
+# revisited - every thread/process worker uses whichever module-level
+# function reference is bound here, so this cannot affect scheduling
+# or parallelism, only which compiled code a call reaches.
+_wht_native = None
+if _HAS_X86_64_V3:
+    try:
+        from paulikit._native import wht_native_v3 as _wht_native
+    except ImportError:
+        pass
+if _wht_native is None:
+    try:
+        from paulikit._native import wht_native as _wht_native
+    except ImportError:
+        _wht_native = None
 
 # Module-level, per-process cache for the WHT kernel's L1-cache tile
 # size - the same pattern (and same rationale) as
@@ -135,10 +185,17 @@ def _wht_tile_for_dim(dim: int) -> int:
         _wht_tile_cache[dim] = tile
         return tile
 
-try:
-    from paulikit._native import coeffs_native as _coeffs_native
-except ImportError:
-    _coeffs_native = None
+_coeffs_native = None
+if _HAS_X86_64_V3:
+    try:
+        from paulikit._native import coeffs_native_v3 as _coeffs_native
+    except ImportError:
+        pass
+if _coeffs_native is None:
+    try:
+        from paulikit._native import coeffs_native as _coeffs_native
+    except ImportError:
+        _coeffs_native = None
 
 try:
     from paulikit._native import gather_native as _gather_native
