@@ -71,6 +71,7 @@ from __future__ import annotations
 
 import os
 import struct
+import threading
 import warnings
 from collections.abc import Iterator
 from pathlib import Path
@@ -87,6 +88,52 @@ try:
     from paulikit._native import wht_native as _wht_native
 except ImportError:
     _wht_native = None
+
+# Module-level, per-process cache for the WHT kernel's L1-cache tile
+# size - the same pattern (and same rationale) as
+# ``autotune._cached_l2_bytes``: passing ``tile=0`` makes
+# ``paulikit_wht_tile_for_cache`` (wht.c) re-derive the tile from this
+# machine's L1 data-cache size via ``sysconf`` on every call, which is
+# invariant for the process's whole lifetime (dim-dependent, but not
+# time-dependent - the same dim always yields the same tile on the
+# same machine). Measured cost of the redundant re-derivation itself
+# turned out small on this particular machine (~1.2e5 instructions
+# across 16 chunks - `sysconf` here is apparently served from a cached
+# glibc value, not a real syscall each time), so this is a cleanliness
+# fix rather than a large measured win locally - but it matters more
+# than a purely local number suggests: on an HPC node (or any machine
+# where `sysconf` genuinely reaches the kernel, or where per-chunk
+# call counts are far higher than this investigation's 16), paying a
+# redundant syscall-class cost once per chunk instead of once per
+# process is exactly the kind of assumption that stops holding at
+# scale. Keyed by ``dim`` (not a single scalar) since callers may
+# process operators of different sizes within one process lifetime.
+# Thread-safe by the same double-checked-locking pattern
+# ``autotune._l2_bytes_or_none`` uses: population is lock-guarded, so
+# concurrent callers from multiple threads (the thread-executor drain
+# path) cannot race to invoke the tile computation more than once per
+# dim. Does not protect against separate *processes* racing - each
+# has its own independent cache, so there is nothing to race there.
+_wht_tile_cache_lock = threading.Lock()
+_wht_tile_cache: dict[int, int] = {}
+
+
+def _wht_tile_for_dim(dim: int) -> int:
+    """Cached wrapper around ``wht_native.tile_for_cache(dim)`` - see
+    the module-level cache comment above for the full rationale.
+    Returns 0 (the kernel's own "derive it yourself" sentinel) if the
+    compiled kernel is unavailable, so callers can pass this straight
+    through to ``wht_rows_inplace`` unconditionally."""
+    if _wht_native is None:
+        return 0
+    if dim in _wht_tile_cache:
+        return _wht_tile_cache[dim]
+    with _wht_tile_cache_lock:
+        if dim in _wht_tile_cache:
+            return _wht_tile_cache[dim]
+        tile = int(_wht_native.tile_for_cache(dim))
+        _wht_tile_cache[dim] = tile
+        return tile
 
 try:
     from paulikit._native import coeffs_native as _coeffs_native
@@ -305,10 +352,14 @@ def _walsh_hadamard_transform_rows(
     # bit-identical - so this is purely a speed path, and its absence
     # changes results not at all.
     #
-    # tile=0 tells the kernel to size the tile itself from this
-    # machine's L1 data cache (sysconf), so the blocking adapts to the
-    # hardware instead of encoding this machine's cache into the
-    # source - and it costs nothing per call, unlike a latency probe.
+    # The tile size is derived from this machine's L1 data cache
+    # (sysconf) once per distinct dim, not re-derived on every call -
+    # see _wht_tile_for_dim's own comment for the process-lifetime
+    # cache and why it matters more at HPC scale than a purely local
+    # measurement suggests. Passing tile=0 (the kernel's own "derive
+    # it yourself" sentinel) would give the same numeric result but
+    # re-run the sysconf-based derivation inside the kernel on every
+    # single chunk - this hoists that to once per dim per process.
     if (
         _wht_native is not None
         and transformed.dtype == np.complex128
@@ -316,7 +367,7 @@ def _walsh_hadamard_transform_rows(
         and rows > 0
         and dim > 1
     ):
-        _wht_native.wht_rows_inplace(transformed, 0)
+        _wht_native.wht_rows_inplace(transformed, _wht_tile_for_dim(dim))
         return transformed
 
     # ONE scratch buffer, allocated once and reused across all
