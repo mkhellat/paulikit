@@ -2598,14 +2598,26 @@ def parallel_decompose_arrays(
     transforms instead of the sparse-aware scatter path. Leave this at
     the default whenever sparsity is unknown or expected.
     """
-    import multiprocessing
-    from concurrent.futures import (
-        FIRST_COMPLETED, ProcessPoolExecutor, ThreadPoolExecutor, wait,
-    )
-
     # NOTE: `autotune` is NOT imported here - see parallel_decompose's
     # own identical note. `_recommended_parallel_chunk_size` (called
     # below only when chunk_size is None) already imports it lazily.
+    #
+    # NOTE: `multiprocessing`/`concurrent.futures` are NOT imported
+    # here either, deliberately - they are only used inside the
+    # executor branches below (`if executor == "thread":` /
+    # the ProcessPoolExecutor branch after it), never on the
+    # `n_workers == 1` fast path this function also has, which
+    # `return`s before reaching either. Measured directly (perf stat
+    # instructions:u): importing `multiprocessing` plus
+    # `concurrent.futures`'s four names costs ~3.8e7 instructions on a
+    # cold process - this was a real, previously uncounted cost paid
+    # by EVERY n_workers=1 call (the common case for the dense
+    # benchmark this whole investigation is about), for machinery that
+    # call never uses. The exact same bug class as the scipy.sparse
+    # and dead-autotune-import fixes earlier in this investigation -
+    # found by re-measuring the n_workers=1-vs-direct-generator-call
+    # gap with perf stat instead of the wall-clock timers that
+    # self-contradicted when this was first investigated.
 
     if executor not in ("auto", "process", "thread"):
         raise ValueError(
@@ -2708,6 +2720,16 @@ def parallel_decompose_arrays(
                 )
             yield chunk_x, chunk_z, chunk_coeff
         return
+
+    # Only imported here, past the n_workers==1 fast path's own
+    # return above - see this function's opening comment for why
+    # (measured ~3.8e7 instructions on a cold process, previously paid
+    # unconditionally by every call including the one that never uses
+    # any of these names).
+    import multiprocessing
+    from concurrent.futures import (
+        FIRST_COMPLETED, ProcessPoolExecutor, ThreadPoolExecutor, wait,
+    )
 
     is_fully_dense = (not is_sparse_input) and n_active == dim
     if is_fully_dense:
