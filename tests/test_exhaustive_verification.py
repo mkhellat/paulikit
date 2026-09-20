@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 Mohammadreza Khellat <mkhellat@beavernets.com>
+
 """Exhaustive, PennyLane-independent correctness check for
 ``paulikit.algorithms.fwht.fwht_pauli_terms``.
 

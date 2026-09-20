@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 Mohammadreza Khellat <mkhellat@beavernets.com>
+
 """Correctness tests for fwht_pauli_terms_iter, the
 streaming/generator counterpart to fwht_pauli_terms.
 

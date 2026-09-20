@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 Mohammadreza Khellat <mkhellat@beavernets.com>
+
 """Runtime auto-tuning heuristics for ``chunk_size`` and the
 streaming-vs-dense decision.
 

@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 Mohammadreza Khellat <mkhellat@beavernets.com>
+
 """Original Pauli decomposition via the Fast Walsh-Hadamard Transform (FWHT).
 
 Implements the O(N^2 log N) algorithm (N = 2**n) described in

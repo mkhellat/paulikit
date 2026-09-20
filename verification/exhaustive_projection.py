@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 Mohammadreza Khellat <mkhellat@beavernets.com>
+
 """Exhaustive, independent Pauli-coefficient verification via direct projection.
 
 This is a second, differently-derived way to compute a Hamiltonian's

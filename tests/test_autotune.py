@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 Mohammadreza Khellat <mkhellat@beavernets.com>
+
 """Tests for the runtime auto-tuning heuristics
 (paulikit.algorithms.autotune) and fwht.auto_decompose's streaming-vs-
 dense decision.

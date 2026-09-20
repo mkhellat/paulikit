@@ -1,3 +1,6 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later
+ * Copyright (C) 2026 Mohammadreza Khellat <mkhellat@beavernets.com> */
+
 /* Original C kernel fusing the four per-chunk stages that follow the
  * Walsh-Hadamard transform.
  *

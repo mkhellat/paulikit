@@ -1,3 +1,6 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later
+ * Copyright (C) 2026 Mohammadreza Khellat <mkhellat@beavernets.com> */
+
 /* Standalone C correctness check for pauli_label.c, run before any
  * Python binding work. Exhaustively checks n_qubits 1..3
  * against a hand-derived truth table, matching the exhaustive range

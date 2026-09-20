@@ -1,3 +1,6 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later
+ * Copyright (C) 2026 Mohammadreza Khellat <mkhellat@beavernets.com> */
+
 /* oneTBB-parallelized variant of pauli_label_batch.
  * Each term's label is independent (see pauli_label.h's
  * pauli_label_batch docstring), so this is embarrassingly parallel -

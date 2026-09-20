@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 Mohammadreza Khellat <mkhellat@beavernets.com>
+
 """Not a correctness test - a documented, reproducible comparison
 between paulikit.algorithms.fwht and PennyLane's qml.pauli_decompose
 on the *same* real coupled-oscillator Hamiltonians, at matched N.

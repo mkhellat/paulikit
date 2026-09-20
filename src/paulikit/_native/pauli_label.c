@@ -1,3 +1,6 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later
+ * Copyright (C) 2026 Mohammadreza Khellat <mkhellat@beavernets.com> */
+
 #include "pauli_label.h"
 
 /* Indexed by (x_j << 1) | z_j, matching the Python reference's

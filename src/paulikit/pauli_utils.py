@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 Mohammadreza Khellat <mkhellat@beavernets.com>
+
 """Minimal, dependency-free Pauli-matrix utilities shared across paulikit.
 
 Deliberately does not depend on PennyLane, Qiskit, or Classiq: this

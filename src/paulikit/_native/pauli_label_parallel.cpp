@@ -1,3 +1,6 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later
+ * Copyright (C) 2026 Mohammadreza Khellat <mkhellat@beavernets.com> */
+
 #include "pauli_label_parallel.h"
 
 #include <oneapi/tbb/parallel_for.h>

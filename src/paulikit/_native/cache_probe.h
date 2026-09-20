@@ -1,3 +1,6 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later
+ * Copyright (C) 2026 Mohammadreza Khellat <mkhellat@beavernets.com> */
+
 /* Empirical cache-latency boundary probe.
  *
  * Portable C reimplementation of the pointer-chase microbenchmark

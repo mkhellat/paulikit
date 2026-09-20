@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 Mohammadreza Khellat <mkhellat@beavernets.com>
+
 """Tests for the empirical cache-latency probe.
 
 Skipped entirely if the optional compiled extension isn't built -

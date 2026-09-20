@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 Mohammadreza Khellat <mkhellat@beavernets.com>
+
 """Tests for the compiled Walsh-Hadamard butterfly kernel.
 
 The kernel is an optional build artifact, so every test here either

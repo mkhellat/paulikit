@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 Mohammadreza Khellat <mkhellat@beavernets.com>
+
 """Tests for the array-yielding parallel decomposition API:
 parallel_decompose_arrays and terms_from_arrays.
 

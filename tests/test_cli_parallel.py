@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 Mohammadreza Khellat <mkhellat@beavernets.com>
+
 """Tests for the CLI's ``--parallel`` decomposition options.
 
 These exercise the command through its real argument parser and entry

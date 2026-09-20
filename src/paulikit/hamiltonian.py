@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 Mohammadreza Khellat <mkhellat@beavernets.com>
+
 """Numeric construction of the coupled-oscillator Hamiltonian.
 
 Built directly in floating point, so large N carries no symbolic

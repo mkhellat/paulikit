@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 Mohammadreza Khellat <mkhellat@beavernets.com>
+
 """Pauli decomposition algorithm implementations.
 
 ``fwht`` holds the decomposition itself, based on the Fast

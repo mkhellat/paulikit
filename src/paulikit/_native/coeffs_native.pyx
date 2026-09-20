@@ -1,4 +1,6 @@
 # cython: language_level=3
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 Mohammadreza Khellat <mkhellat@beavernets.com>
 """Cython binding for the fused coefficient kernel.
 
 Replaces five separate NumPy passes over a (rows, dim) block - phase

@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 Mohammadreza Khellat <mkhellat@beavernets.com>
+
 """Self-consistency tests for the correctness fixtures themselves.
 
 These tests validate ``paulikit.testing.fixtures`` independently of

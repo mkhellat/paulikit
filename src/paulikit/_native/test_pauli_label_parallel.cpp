@@ -1,3 +1,6 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later
+ * Copyright (C) 2026 Mohammadreza Khellat <mkhellat@beavernets.com> */
+
 /* Standalone C++ correctness + timing check for
  * pauli_label_batch_parallel, run before any Python binding work.
  * Compares against the serial pauli_label_batch term-by-term (not

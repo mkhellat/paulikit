@@ -1,4 +1,6 @@
 # cython: language_level=3
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 Mohammadreza Khellat <mkhellat@beavernets.com>
 """Cython binding for the Walsh-Hadamard butterfly C kernel -
 paulikit's optional compiled fast path for the transform itself.
 

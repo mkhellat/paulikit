@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 Mohammadreza Khellat <mkhellat@beavernets.com>
+
 """Correctness tests for the sparse-Hamiltonian construction/input
 path: ``build_hamiltonian(..., sparse=True)``,
 ``pad_to_power_of_two(..., sparse=True)``, and

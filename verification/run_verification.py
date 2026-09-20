@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 Mohammadreza Khellat <mkhellat@beavernets.com>
 """Single reproducible entry point for exhaustive correctness verification.
 
 Every number quoted in FINDINGS.md or memory MUST come from a JSON

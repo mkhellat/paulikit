@@ -1,3 +1,6 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later
+ * Copyright (C) 2026 Mohammadreza Khellat <mkhellat@beavernets.com> */
+
 /* Fused phase/scale/threshold/emit kernel. See coeffs.h for the
  * design rationale and the profile that motivated it. */
 

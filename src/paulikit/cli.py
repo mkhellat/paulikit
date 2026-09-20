@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 Mohammadreza Khellat <mkhellat@beavernets.com>
 """Command-line interface for the paulikit package.
 
 The other modules (``paulikit.hamiltonian``, ``paulikit.pauli_utils``,

@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 Mohammadreza Khellat <mkhellat@beavernets.com>
+
 """Tests for the binary chunk-framed checkpoint format
 (docs/superpowers/specs/2026-09-08-binary-chunk-framed-checkpoint-design.md).
 

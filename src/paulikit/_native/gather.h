@@ -1,3 +1,6 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later
+ * Copyright (C) 2026 Mohammadreza Khellat <mkhellat@beavernets.com> */
+
 /* Original C kernel for the fully-dense per-chunk XOR-gather.
  *
  * WHY THIS EXISTS. For an operator with every cell nonzero (the

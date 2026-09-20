@@ -1,3 +1,6 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later
+ * Copyright (C) 2026 Mohammadreza Khellat <mkhellat@beavernets.com> */
+
 /* Original C implementation of the Hermiticity-violation check.
  * See hermitian_check.h for the design rationale. */
 

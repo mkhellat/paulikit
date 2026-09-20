@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 Mohammadreza Khellat <mkhellat@beavernets.com>
+
 """Sphinx configuration for paulikit's documentation.
 
 Build with (from this directory, after `pip install -e ".[docs]"`

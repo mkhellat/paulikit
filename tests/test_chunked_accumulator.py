@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 Mohammadreza Khellat <mkhellat@beavernets.com>
+
 """Correctness tests for the chunked path's space-complexity fix
 (per-chunk thresholding into a growable COO accumulator instead of
 one dense (n_active, dim) block) and its optional checkpoint/resume
