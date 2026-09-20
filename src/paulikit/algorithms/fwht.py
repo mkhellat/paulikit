@@ -1106,22 +1106,33 @@ def _prepare_operator_for_fwht(operator, assume_dense=False):
     if assume_dense and not is_sparse_input:
         # Caller-verified promise, not auto-detection: skip the
         # O(dim**2) np.nonzero scan (and the values_nz gather that
-        # depends on it) entirely. p_nz/q_nz/x_nz/values_nz are
-        # returned as empty placeholders - _active_x_and_inverse's own
-        # dense fast path only checks len(x_nz) == dim*dim, and
+        # depends on it) entirely. p_nz/q_nz/x_nz/values_nz are all
+        # returned as genuinely EMPTY placeholders -
         # parallel_decompose_arrays's fully-dense fast path reads
-        # `operator` directly per chunk without ever touching these -
-        # so building real dim*dim-length arrays here would itself
-        # cost real, avoidable work (measured: even a scan-free
+        # `operator` directly per chunk without ever touching these,
+        # and _active_x_and_inverse's own dense fast path is now
+        # selected by an explicit `is_fully_dense` flag passed by every
+        # caller (== `assume_dense and not is_sparse_input`, computed
+        # here and re-derived identically at each call site) rather
+        # than inferred from `len(x_nz) == dim*dim` - so x_nz needs no
+        # particular length at all here, only its dtype. Building
+        # real dim*dim-length arrays here would itself cost real,
+        # avoidable work (measured: even a scan-free
         # np.repeat/np.tile/XOR construction of x_nz alone still costs
         # ~583M instructions at dim=1024, close to np.nonzero's own
         # 688M - the O(dim**2) MATERIALIZATION is the real cost, not
-        # np.nonzero's specific scan mechanics, so the only way to
-        # actually avoid paying it is to never materialize these
-        # arrays for the fully-dense case at all).
+        # np.nonzero's specific scan mechanics) AND, found later
+        # (2026-09-20, while checking that this path never keeps a
+        # second copy of the operator in memory): a real, measured
+        # memory cost - the OLD `np.empty(dim*dim, dtype=np.intp)`
+        # placeholder alone was 512 MiB at qubits=13, allocated and
+        # counted in peak RSS despite never being read. Making
+        # `_active_x_and_inverse`'s fast path explicit rather than
+        # length-inferred is what makes a genuinely empty placeholder
+        # safe here.
         p_nz = np.empty(0, dtype=np.intp)
         q_nz = np.empty(0, dtype=np.intp)
-        x_nz = np.empty(dim * dim, dtype=np.intp)
+        x_nz = np.empty(0, dtype=np.intp)
         values_nz = np.empty(0, dtype=complex)
         return (
             operator, is_sparse_input, dim, n_qubits, p_nz, q_nz, x_nz, values_nz
@@ -1164,18 +1175,22 @@ def _prepare_operator_for_fwht(operator, assume_dense=False):
     )
 
 
-def _active_x_and_inverse(x_nz, dim):
+def _active_x_and_inverse(x_nz, dim, is_fully_dense=False):
     """Shared by every caller downstream of ``_prepare_operator_for_fwht``:
     deduplicates ``x_nz`` into ``active_x`` (the distinct XOR masks) and
     ``inverse`` (per-nonzero-entry index into ``active_x``), the same
     pair ``np.unique(x_nz, return_inverse=True)`` returns.
 
-    Takes a fast path for fully DENSE input. ``len(x_nz) == dim * dim``
-    happens if and only if every cell of the (dim, dim) operator is
-    nonzero - and when it does, ``active_x`` is provably ``arange(dim)``
-    and ``inverse`` is provably identical to ``x_nz`` itself, with no
-    need to call ``np.unique`` (an internal sort over ``dim*dim``
-    elements) to discover either fact:
+    Takes a fast path for fully DENSE input, signalled explicitly by
+    ``is_fully_dense`` (the caller already knows this - either because
+    every cell of the (dim, dim) operator was verified nonzero via
+    ``np.nonzero``, or because the caller passed ``assume_dense=True``
+    as its own promise) rather than being inferred from
+    ``len(x_nz) == dim * dim``. When true, ``active_x`` is provably
+    ``arange(dim)`` and ``inverse`` is provably identical to the REAL
+    XOR-gathered ``x_nz`` (when one was actually built) with no need
+    to call ``np.unique`` (an internal sort over ``dim*dim`` elements)
+    to discover either fact:
 
     For any fixed p, ``x = p ^ q`` is a bijection of q over ``[0, dim)``
     (XOR by a constant is its own inverse), so a fully-populated row p
@@ -1187,6 +1202,21 @@ def _active_x_and_inverse(x_nz, dim):
     XOR-gather construction, not a property of any particular matrix's
     values - true for any fully dense operator regardless of content.
 
+    ``assume_dense=True`` callers never build a real ``x_nz`` at all
+    (see ``_prepare_operator_for_fwht``'s own dense-fast-path branch) -
+    they pass an empty placeholder and ``is_fully_dense=True`` directly,
+    since ``inverse``'s CONTENTS are never read on the fully-dense path
+    downstream (``parallel_decompose_arrays`` etc. read ``operator``
+    directly per chunk instead) - only ``active_x``'s length
+    (``n_active == dim``) matters. Deciding this from an explicit flag
+    rather than ``len(x_nz) == dim * dim`` is what makes a genuinely
+    empty (zero-cost) placeholder safe to pass here, instead of the
+    dim*dim-length ``np.empty`` array (512 MiB at qubits=13) an earlier
+    version of this fast path allocated solely so this length check
+    would pass - a real, measured, now-fixed memory cost, since a
+    dense fast-path caller's peak RSS included that placeholder even
+    though nothing ever read it.
+
     Skipping the redundant sort here measured ~2x faster on this stage
     alone at dim=2048 (dense random Hermitian, qubits=11) and this
     stage was ~53-67% of total `parallel_decompose_arrays` time on
@@ -1194,12 +1224,11 @@ def _active_x_and_inverse(x_nz, dim):
     output is verified bit-identical to the general path it replaces
     before being trusted (see tests/test_fwht.py).
 
-    For sparse input this is always false (some cells are structurally
-    zero, so len(x_nz) < dim*dim) and the general ``np.unique`` path
-    runs unchanged - this never touches the sparse/structured-input
-    code path's behavior or performance.
+    For sparse input ``is_fully_dense`` is always False and the general
+    ``np.unique`` path runs unchanged - this never touches the
+    sparse/structured-input code path's behavior or performance.
     """
-    if len(x_nz) == dim * dim:
+    if is_fully_dense:
         return np.arange(dim), x_nz
     active_x, inverse = np.unique(x_nz, return_inverse=True)
     return active_x, inverse
@@ -1333,7 +1362,9 @@ def fwht_pauli_coefficients(
     ) = _prepare_operator_for_fwht(
         operator, assume_dense=assume_dense
     )
-    active_x, inverse = _active_x_and_inverse(x_nz, dim)
+    active_x, inverse = _active_x_and_inverse(
+        x_nz, dim, is_fully_dense=assume_dense and not is_sparse_input
+    )
     n_active = len(active_x)
 
     z_indices = np.arange(dim)[np.newaxis, :]
@@ -1777,7 +1808,9 @@ def fwht_pauli_terms_iter(
     ) = _prepare_operator_for_fwht(
         operator, assume_dense=assume_dense
     )
-    active_x, inverse = _active_x_and_inverse(x_nz, dim)
+    active_x, inverse = _active_x_and_inverse(
+        x_nz, dim, is_fully_dense=assume_dense and not is_sparse_input
+    )
     n_active = len(active_x)
     z_indices = np.arange(dim)[np.newaxis, :]
 
@@ -2760,7 +2793,9 @@ def parallel_decompose_arrays(
     ) = _prepare_operator_for_fwht(
         operator, assume_dense=assume_dense
     )
-    active_x, inverse = _active_x_and_inverse(x_nz, dim)
+    active_x, inverse = _active_x_and_inverse(
+        x_nz, dim, is_fully_dense=assume_dense and not is_sparse_input
+    )
     n_active = len(active_x)
     z_indices = np.arange(dim)[np.newaxis, :]
 
