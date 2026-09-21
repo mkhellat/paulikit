@@ -2678,6 +2678,7 @@ def parallel_decompose_arrays(
     checkpoint_path: str | Path | None = None,
     executor: str = "auto",
     assume_dense: bool = False,
+    eager_threads: bool = False,
 ) -> Iterator[tuple[NDArray, NDArray, NDArray]]:
     """Multi-core decomposition yielding raw ``(x, z, coeff)`` arrays.
 
@@ -2741,6 +2742,35 @@ def parallel_decompose_arrays(
     the detection scan is worth paying for full-array reads and
     transforms instead of the sparse-aware scatter path. Leave this at
     the default whenever sparsity is unknown or expected.
+
+    ``eager_threads`` (default ``False``, only affects ``executor ==
+    "thread"``): forces all ``n_workers`` OS threads to exist before
+    the first real chunk is submitted, instead of
+    ``ThreadPoolExecutor``'s own default lazy behavior (a new OS
+    thread is spawned only when ``submit()`` finds no idle thread
+    already waiting - confirmed directly against the CPython 3.12
+    source, ``_adjust_thread_count``). Measured directly (entry/exit
+    instrumentation on a real N=150, n_workers=5 run - see
+    paulikit-manuscript/debug/SESSION_QA.md Phase 10): without this,
+    the first 5 chunks start staggered by ~350-450us each rather than
+    together, because the priming loop's first 5 ``pool.submit()``
+    calls each force a fresh ``pthread_create`` - a real, one-time
+    ~1.5-2ms cost, small relative to N=150's own ~1.5-3s total
+    runtime (~0.05-0.1%) but real and now precisely measured. Setting
+    this to ``True`` submits ``n_workers`` barrier-synchronized primer
+    tasks immediately after the pool is constructed (each blocks on a
+    shared ``threading.Barrier(n_workers)`` until every worker thread
+    has actually started, so none can go idle and get reused by a
+    later ``submit()`` before the pool is fully warmed - verified this
+    detail matters: a naive "submit n_workers trivial no-ops" attempt
+    without a barrier only spawned 2 of 5 threads in one measured
+    trial, since fast tasks let a thread finish and go idle before the
+    next submit() even runs). No effect on ``executor == "process"``
+    (this parameter is not read there) and no effect on the single-
+    worker fast path (``n_workers == 1`` never constructs a
+    ``ThreadPoolExecutor`` at all, so there is nothing to prime).
+    Output is bit-identical either way - this only changes WHEN
+    threads are created, never what they compute.
     """
     # NOTE: `autotune` is NOT imported here - see parallel_decompose's
     # own identical note. `_recommended_parallel_chunk_size` (called
@@ -3006,6 +3036,33 @@ def parallel_decompose_arrays(
         )
         try:
             with ThreadPoolExecutor(max_workers=n_workers) as pool:
+                if eager_threads:
+                    # Force all n_workers OS threads to exist now,
+                    # before any real chunk is submitted - see this
+                    # function's own docstring for why (measured
+                    # ~350-450us per-thread stagger otherwise) and why
+                    # a barrier specifically (a naive "submit
+                    # n_workers no-ops" without one under-spawns,
+                    # verified directly). A Barrier(n) call that never
+                    # collects n parties blocks forever, so an explicit
+                    # timeout turns any future mismatch between the
+                    # pool's real worker count and n_workers into a
+                    # loud BrokenBarrierError instead of a silent hang
+                    # - defensive, since n_workers is validated earlier
+                    # in this function (_resolve_n_workers,
+                    # max_in_flight's own max(1, ...) floor) and should
+                    # never actually mismatch here.
+                    _eager_barrier = threading.Barrier(n_workers)
+
+                    def _eager_prime() -> None:
+                        _eager_barrier.wait(timeout=30.0)
+
+                    _eager_futures = [
+                        pool.submit(_eager_prime) for _ in range(n_workers)
+                    ]
+                    for _f in _eager_futures:
+                        _f.result(timeout=30.0)
+
                 pending_iter = iter(pending)
                 in_flight: set = set()
 

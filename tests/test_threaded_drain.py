@@ -140,3 +140,69 @@ def test_thread_leaves_worker_state_restored():
     before = fwht_module._parallel_worker_state
     _collect(_operator(10), chunk_size=2, atol=1e-9, executor="thread")
     assert fwht_module._parallel_worker_state is before
+
+
+@pytest.mark.parametrize("n_workers", [1, 2, 5, 8])
+def test_eager_threads_does_not_change_the_answer(n_workers):
+    """eager_threads only changes WHEN worker OS threads are created
+    (all up front via a barrier, instead of ThreadPoolExecutor's own
+    lazy one-per-submit() spin-up) - never what they compute. Chunks
+    are independent regardless of thread-creation timing, so the
+    result must be bit-identical to the default (lazy) path at every
+    n_workers, including 1 (the single-worker fast path, which never
+    constructs a ThreadPoolExecutor at all and so never reaches the
+    eager_threads branch) and a count above the 4-core dev machine's
+    physical core count (8), to also exercise oversubscription."""
+    op = _operator(20)
+    lazy = _collect(
+        op, chunk_size=2, atol=1e-9, executor="thread", n_workers=n_workers,
+        eager_threads=False,
+    )
+    eager = _collect(
+        op, chunk_size=2, atol=1e-9, executor="thread", n_workers=n_workers,
+        eager_threads=True,
+    )
+    for left, right in zip(lazy, eager):
+        assert np.array_equal(left, right)
+
+
+def test_eager_threads_has_no_effect_under_process_executor():
+    """eager_threads is read only inside the executor == "thread"
+    branch - passing it with executor="process" must be accepted
+    (not raise) and change nothing, since ProcessPoolExecutor workers
+    are never lazily-vs-eagerly spun up by this code path at all."""
+    op = _operator(10)
+    without = _collect(
+        op, chunk_size=2, atol=1e-9, executor="process", eager_threads=False,
+    )
+    with_flag = _collect(
+        op, chunk_size=2, atol=1e-9, executor="process", eager_threads=True,
+    )
+    for left, right in zip(without, with_flag):
+        assert np.array_equal(left, right)
+
+
+def test_eager_threads_does_not_deadlock_when_n_workers_is_clamped():
+    """max_in_flight's own clamp (fwht.py) can reduce the EFFECTIVE
+    n_workers used to construct ThreadPoolExecutor below the value the
+    caller requested, when there are fewer chunks than requested
+    workers - e.g. a tiny operator with n_workers=8 but only 2 chunks
+    total. The eager_threads barrier is sized from that SAME
+    already-clamped n_workers (it runs after the clamp, inside the
+    executor == "thread" branch), so it must never deadlock waiting
+    for more parties than the pool actually has. A tiny N=2 operator
+    at chunk_size=2 with the same operator's nonzero count producing
+    far fewer than 8 chunks reproduces the clamp."""
+    op = _operator(2)
+    result = _collect(
+        op, chunk_size=2, atol=1e-9, executor="thread", n_workers=8,
+        eager_threads=True,
+    )
+    # Correctness, not just "it returned": must match the unclamped,
+    # non-eager reference.
+    reference = _collect(
+        op, chunk_size=2, atol=1e-9, executor="thread", n_workers=8,
+        eager_threads=False,
+    )
+    for left, right in zip(result, reference):
+        assert np.array_equal(left, right)
