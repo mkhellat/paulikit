@@ -3068,10 +3068,37 @@ def parallel_decompose_arrays(
         saved_state = _parallel_worker_state
         # Threads share the parent's memory, so the per-worker state
         # the process path ships through `initargs` is simply set here
-        # and read by the same `_parallel_worker_chunk`. No pinning:
-        # pin_cpus exists to stop separate processes migrating, and
-        # pinning threads within one process individually would
-        # serialise them onto one core.
+        # and read by the same `_parallel_worker_chunk`.
+        #
+        # Pinning, unlike an earlier version of this comment claimed:
+        # `os.sched_setaffinity(0, {cpu})` operates on the CALLING
+        # THREAD, not the whole process, when called from inside one -
+        # confirmed directly (three threads each pinned themselves to
+        # a distinct CPU, and `sched_getaffinity(0)` read back from
+        # each showed its own single-CPU mask while the main thread's
+        # own affinity stayed the full unrestricted set throughout).
+        # Assigning each of the n_workers threads a DIFFERENT
+        # `pin_cpus` entry (one representative logical CPU per
+        # physical core, same list `_physical_core_representative_
+        # cpus` already gives the process path) spreads threads across
+        # distinct cores - the opposite of serialising them onto one.
+        # Measured directly (paulikit-manuscript/debug/SESSION_QA.md
+        # Phase 29, 5 reps, Welch's t-test): at n_workers ==
+        # physical-core-count, pinning makes no measurable difference
+        # (the scheduler already places threads well when nothing
+        # forces a collision); at n_workers > physical-core-count
+        # (forced hyperthread-sibling oversubscription, the real
+        # N=150/n_workers=5 config on a 4-core machine), pinning gives
+        # a real, statistically significant ~5.2% win (p=0.0008) with
+        # roughly 3x tighter run-to-run variance - the same "tighter
+        # and faster" signature Design A's own submission-queue fix
+        # showed. Assigned by SLICE index (fixed and known up front,
+        # since Design A already assigns one contiguous slice per
+        # worker before any thread starts), not a shared/racing
+        # counter like the process path's first-come-first-served
+        # `next_pin_index` - there is nothing to race here.
+        pin_cpus = _physical_core_representative_cpus()
+
         _parallel_worker_init(
             operator, is_sparse_input, sorted_inverse, sorted_p_nz,
             sorted_q_nz, sorted_values, active_x, dim, n_qubits,
@@ -3126,13 +3153,18 @@ def parallel_decompose_arrays(
                 results_q: _stream_queue.SimpleQueue = _stream_queue.SimpleQueue()
                 _SLICE_DONE = object()
 
-                def _run_slice(slice_items: list) -> None:
+                def _run_slice(slice_index: int, slice_items: list) -> None:
+                    if pin_cpus:
+                        _pin_current_process_to_cpu(
+                            pin_cpus[slice_index % len(pin_cpus)]
+                        )
                     for ci, cs_, ce_ in slice_items:
                         results_q.put(_parallel_worker_chunk(ci, cs_, ce_))
                     results_q.put(_SLICE_DONE)
 
                 slice_futures = [
-                    pool.submit(_run_slice, s) for s in slices
+                    pool.submit(_run_slice, i, s)
+                    for i, s in enumerate(slices)
                 ]
 
                 done_slices = 0
