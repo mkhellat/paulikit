@@ -3063,6 +3063,7 @@ def parallel_decompose_arrays(
         # bounded yield contract (results still flow out one chunk at
         # a time, not collected then returned).
         import queue as _stream_queue
+        from collections import deque as _stream_deque
 
         global _parallel_worker_state
         saved_state = _parallel_worker_state
@@ -3197,10 +3198,23 @@ def parallel_decompose_arrays(
                 # shorter" contract.
                 slice_sizes[-1] += len(pending) - sum(slice_sizes)
 
-                slices = []
+                # Each worker's slice is a deque, not a plain list, so
+                # an idle worker can STEAL remaining work from another
+                # worker's deque once its own runs dry - see the work-
+                # stealing rationale below. `collections.deque` is
+                # documented (and empirically verified, paulikit-
+                # manuscript/debug/SESSION_QA.md Phase 42) thread-safe
+                # for concurrent `popleft()`(front)/`pop()`(back) on
+                # the SAME deque with no explicit lock: each op is a
+                # single GIL-atomic step, and the deque's own
+                # implementation keeps front/back operations from
+                # corrupting each other. Only the OWNING worker ever
+                # calls `popleft()` on its own deque; only OTHER
+                # workers (thieves) call `pop()` on it.
+                slices: list[_stream_deque] = []
                 _pos = 0
                 for _size in slice_sizes:
-                    slices.append(pending[_pos:_pos + _size])
+                    slices.append(_stream_deque(pending[_pos:_pos + _size]))
                     _pos += _size
 
                 # Thread-safe, unbounded, no lock-tuning needed -
@@ -3211,12 +3225,60 @@ def parallel_decompose_arrays(
                 results_q: _stream_queue.SimpleQueue = _stream_queue.SimpleQueue()
                 _SLICE_DONE = object()
 
-                def _run_slice(slice_index: int, slice_items: list) -> None:
+                def _steal(my_index: int):
+                    """Take one item from whichever OTHER worker's
+                    deque currently holds the most work, trying the
+                    next-fullest candidate if a race empties the
+                    chosen one first (no lock: a lost race is just an
+                    `IndexError`, not a correctness problem - each
+                    individual `pop()`/`popleft()` is already atomic).
+                    Fullest-victim, not Cilk's classic random-victim:
+                    measured directly (SESSION_QA.md Phase 42, Monte
+                    Carlo, 100k trials/config) that at this workload's
+                    real worker-count range (4-16; oversubscription
+                    beyond physical-core-count already measured worse
+                    elsewhere in this investigation), fullest-victim
+                    finds real work in exactly one lookup with 100%
+                    success whenever any exists, while random-victim's
+                    success rate degrades sharply (as low as ~79% in
+                    one tested config) exactly when most workers are
+                    already drained - the tail-of-run scenario this
+                    mechanism exists to fix. The O(n_slices) length
+                    scan this requires is real but negligible at this
+                    scale (measured ~1-2us at n_slices=4-16, ~0.0002%
+                    of one chunk's own ~700us cost) - Cilk's own
+                    justification for random selection (avoiding that
+                    scan) targets a scale of dozens-to-thousands of
+                    workers this single-machine, physical-core-bound
+                    design never reaches.
+                    Returns the stolen `(chunk_index, chunk_start,
+                    chunk_end)` tuple, or `None` if every other deque
+                    is confirmed empty.
+                    """
+                    victims = sorted(
+                        (j for j in range(len(slices)) if j != my_index),
+                        key=lambda j: -len(slices[j]),
+                    )
+                    for victim in victims:
+                        try:
+                            return slices[victim].pop()
+                        except IndexError:
+                            continue
+                    return None
+
+                def _run_slice(slice_index: int, my_slice) -> None:
                     if pin_cpus:
                         _pin_current_process_to_cpu(
                             pin_cpus[slice_index % len(pin_cpus)]
                         )
-                    for ci, cs_, ce_ in slice_items:
+                    while True:
+                        try:
+                            ci, cs_, ce_ = my_slice.popleft()
+                        except IndexError:
+                            item = _steal(slice_index)
+                            if item is None:
+                                break
+                            ci, cs_, ce_ = item
                         results_q.put(_parallel_worker_chunk(ci, cs_, ce_))
                     results_q.put(_SLICE_DONE)
 
