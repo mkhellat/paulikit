@@ -49,6 +49,20 @@
  * clarity cost there; in C it is free, since the comparison is inline
  * either way.)
  *
+ * The emit itself is branchless: every element is written to the
+ * output slot unconditionally, and the slot index advances by 0 or 1
+ * via arithmetic rather than a conditional. Survival is essentially
+ * data-dependent noise (the transformed coefficient's magnitude), so
+ * the branch this replaces mispredicted ~14% of the time at a real
+ * chunk's survival rate - measured (perf stat, isolated probe,
+ * dim=16384 rows=2, N=150's real 34.14% survival rate): 271.28us ->
+ * 69.96us, 3.88x, branch-misses 41.74M -> 0.53M. The phase switch
+ * above is NOT rewritten the same way - isolated separately (forcing
+ * survival to 0%) and confirmed it already predicts near-perfectly
+ * (0.2% miss rate, no cmov/jump-table in the generated assembly
+ * either); only the threshold-and-emit branch was the problem. See
+ * paulikit-manuscript/debug/SESSION_QA.md Phase 30.
+ *
  * Note `1/dim` is applied as a multiply. dim is a power of two, so
  * 1/dim is exact in binary floating point and the result is
  * bit-identical to dividing.
@@ -82,7 +96,11 @@ extern "C" {
  * Each must have room for `rows * dim` entries (`out_coeff` for
  * `2 * rows * dim` doubles) - the worst case where nothing is
  * thresholded away. The caller sizes them; the kernel never grows
- * them.
+ * them. The emit loop writes every candidate element's slot
+ * unconditionally (branchless - see below) and only advances past a
+ * surviving one, so a discarded element's slot is simply overwritten
+ * by whatever writes there next; nothing beyond the returned count is
+ * meaningful, same contract as before.
  *
  * Returns the number of terms actually written.
  *

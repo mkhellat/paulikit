@@ -57,13 +57,35 @@ static inline unsigned paulikit_popcount_fallback(uint64_t v)
                                                                               \
                 /* |c| > atol  <=>  |c|^2 > atol^2 for atol >= 0, so   */     \
                 /* the square root is avoidable and exactly so.        */     \
-                if (cr * cr + ci * ci > atol_squared) {                       \
-                    xs_out[n] = x_emit;                                       \
-                    zs_out[n] = (IDX_T)z;                                     \
-                    out_coeff[2 * n] = cr;                                    \
-                    out_coeff[2 * n + 1] = ci;                                \
-                    n++;                                                      \
-                }                                                             \
+                /*                                                     */     \
+                /* Branchless emit: write unconditionally, then        */     \
+                /* advance n by 0 or 1 via arithmetic instead of        */     \
+                /* gating the write with a branch. Safe by              */     \
+                /* construction - out_x/out_z/out_coeff are always      */     \
+                /* sized for the worst case (every element survives),   */    \
+                /* so slot n is in bounds regardless, and a discarded   */     \
+                /* element's slot is simply overwritten by whatever     */     \
+                /* writes there next. The survival outcome is           */     \
+                /* essentially data-dependent noise (the transformed    */     \
+                /* coefficient's magnitude), so the branch this         */     \
+                /* replaces mispredicted ~14% of the time at the real   */     \
+                /* survival rate and cost roughly 3x the cycles of the  */     \
+                /* branchless form - measured directly (perf stat,      */     \
+                /* isolated probe, dim=16384 rows=2 at N=150's real     */     \
+                /* 34.14% survival rate): 271.28us -> 69.96us (3.88x),  */     \
+                /* branch-misses 41.74M -> 0.53M. The phase switch      */     \
+                /* above is NOT rewritten the same way - isolated       */     \
+                /* separately (forcing survival to 0%) and confirmed it */     \
+                /* already predicts near-perfectly (0.2% miss rate, no  */     \
+                /* cmov/jump-table in the generated assembly either) -  */     \
+                /* only the threshold-and-emit branch was the problem.  */     \
+                /* See paulikit-manuscript/debug/SESSION_QA.md Phase 30.*/     \
+                const int64_t keep = (cr * cr + ci * ci > atol_squared);      \
+                xs_out[n] = x_emit;                                           \
+                zs_out[n] = (IDX_T)z;                                         \
+                out_coeff[2 * n] = cr;                                        \
+                out_coeff[2 * n + 1] = ci;                                    \
+                n += keep;                                                    \
             }                                                                 \
         }                                                                     \
     } while (0)
