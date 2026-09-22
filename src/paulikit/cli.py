@@ -418,20 +418,21 @@ def build_parser():
              "with the same path. Omit for no checkpointing (default).",
     )
     decompose_parser.add_argument(
-        "--eager-threads", action="store_true",
+        "--no-eager-threads", dest="eager_threads", action="store_false",
         help="With --parallel and --executor thread (or --executor "
-             "auto resolving to thread), force all --n-workers OS "
-             "threads to exist before the first chunk is submitted, "
-             "instead of ThreadPoolExecutor's default lazy spin-up. "
-             "Measured directly: without this, the first few chunks "
-             "start staggered by ~350-450us each rather than "
-             "together, since each of the pool's first few submit() "
-             "calls on a fresh pool forces a new OS thread creation. "
-             "A one-time ~1.5-2ms cost either way - this only changes "
-             "WHEN it is paid (all up front vs staggered across the "
-             "first several chunks), not whether it is paid. No "
-             "effect with --executor process or at --n-workers 1. "
-             "Output is unaffected - this cannot change correctness.",
+             "auto resolving to thread), restore ThreadPoolExecutor's "
+             "default LAZY thread spin-up instead of forcing all "
+             "--n-workers OS threads to exist before the first chunk "
+             "is submitted (the default). Measured directly: without "
+             "eager spin-up, the first few chunks start staggered by "
+             "~350-450us each rather than together, since each of the "
+             "pool's first few submit() calls on a fresh pool forces "
+             "a new OS thread creation. A one-time ~1.5-2ms cost "
+             "either way - this only changes WHEN it is paid (all up "
+             "front vs staggered across the first several chunks), "
+             "not whether it is paid. No effect with --executor "
+             "process or at --n-workers 1. Output is unaffected - "
+             "this cannot change correctness.",
     )
     decompose_parser.set_defaults(func=cmd_decompose)
 

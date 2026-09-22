@@ -2678,7 +2678,7 @@ def parallel_decompose_arrays(
     checkpoint_path: str | Path | None = None,
     executor: str = "auto",
     assume_dense: bool = False,
-    eager_threads: bool = False,
+    eager_threads: bool = True,
 ) -> Iterator[tuple[NDArray, NDArray, NDArray]]:
     """Multi-core decomposition yielding raw ``(x, z, coeff)`` arrays.
 
@@ -2743,7 +2743,7 @@ def parallel_decompose_arrays(
     transforms instead of the sparse-aware scatter path. Leave this at
     the default whenever sparsity is unknown or expected.
 
-    ``eager_threads`` (default ``False``, only affects ``executor ==
+    ``eager_threads`` (default ``True``, only affects ``executor ==
     "thread"``): forces all ``n_workers`` OS threads to exist before
     the first real chunk is submitted, instead of
     ``ThreadPoolExecutor``'s own default lazy behavior (a new OS
@@ -2770,7 +2770,11 @@ def parallel_decompose_arrays(
     worker fast path (``n_workers == 1`` never constructs a
     ``ThreadPoolExecutor`` at all, so there is nothing to prime).
     Output is bit-identical either way - this only changes WHEN
-    threads are created, never what they compute.
+    threads are created, never what they compute. Defaults to
+    ``True`` since the staggered-startup cost it removes is real and
+    free to remove (paulikit-manuscript/debug/SESSION_QA.md Phase 10);
+    pass ``False`` to restore the old lazy spin-up if that ever
+    matters (e.g. profiling the pool's own startup behavior).
     """
     # NOTE: `autotune` is NOT imported here - see parallel_decompose's
     # own identical note. `_recommended_parallel_chunk_size` (called
@@ -2996,7 +3000,8 @@ def parallel_decompose_arrays(
     # initializer gives every worker identical initargs, with no
     # built-in per-worker ordinal of its own).
     if executor == "thread":
-        # THREADED DRAIN.
+        # THREADED DRAIN - static per-worker partitioning ("Design A",
+        # paulikit-manuscript/debug/SESSION_QA.md Phase 15/15.3/23b).
         #
         # Threads work here for one specific reason: both compiled
         # kernels release the GIL, so `_parallel_worker_chunk`'s real
@@ -3018,9 +3023,47 @@ def parallel_decompose_arrays(
         # Threads pay no pickling at all - the arrays never leave this
         # address space.
         #
+        # Static partitioning, not the dynamic bounded-submission
+        # drain the process path below still uses: `pending` is split
+        # into exactly `n_workers` contiguous slices up front, and
+        # each worker gets exactly ONE `pool.submit()` call for its
+        # whole slice, iterating it internally with a plain Python
+        # `for` loop - zero further cross-thread `submit()` calls
+        # after the initial `n_workers`. This removes
+        # `ThreadPoolExecutor`'s shared, lock-contended work queue
+        # from the hot path almost entirely (n_workers submissions
+        # instead of len(pending) - 5 instead of 5595 at N=150,
+        # n_workers=5), which is the actual mechanism the dynamic
+        # path's contention lived in. Measured (perf stat
+        # --no-inherit, 3 reps, N=150 n_workers=5): 8.6% fewer
+        # instructions, 13.3% fewer cycles, IPC improved (not
+        # degraded), and run-to-run variance roughly two orders of
+        # magnitude tighter than the dynamic path (Phase 15.3) - a
+        # real, unambiguous, not marginal win on every axis measured,
+        # fully committed to here with no dynamic fallback: every
+        # chunk-size/worker-count configuration measured across this
+        # investigation (N=150, N=200, chunk_size sweeps) found
+        # per-chunk cost uniform enough that static partitioning wins
+        # outright and the case for keeping dynamic load-balancing
+        # never materialized.
+        #
+        # Falsified before being ported to the ProcessPoolExecutor
+        # path below: this design's streaming-results mechanism
+        # (`queue.SimpleQueue`) only works within one process's shared
+        # memory, and the process path's actually-dominant cost is
+        # per-chunk pickling of `_CallItem`/`_ResultItem` (paid once
+        # per chunk regardless of submit() call count) - Design A's
+        # saving (fewer submissions) does not touch that cost, so it
+        # is not applicable there without a wholly different,
+        # unmeasured design. Scoped to the thread path only,
+        # unconditionally, matching `eager_threads`'s own scope.
+        #
         # Everything else is deliberately unchanged: same chunking,
-        # same atol, same checkpoint format, same yield contract, same
-        # bounded in-flight window. Only the drain differs.
+        # same atol, same checkpoint format, same streamed/memory-
+        # bounded yield contract (results still flow out one chunk at
+        # a time, not collected then returned).
+        import queue as _stream_queue
+
         global _parallel_worker_state
         saved_state = _parallel_worker_state
         # Threads share the parent's memory, so the per-worker state
@@ -3063,44 +3106,65 @@ def parallel_decompose_arrays(
                     for _f in _eager_futures:
                         _f.result(timeout=30.0)
 
-                pending_iter = iter(pending)
-                in_flight: set = set()
+                # Split `pending` into n_workers contiguous slices
+                # (ceiling division, so only the last slice may be
+                # shorter). n_slices is capped at len(pending) so a
+                # tiny job (fewer pending chunks than n_workers) never
+                # creates empty slices.
+                n_slices = min(n_workers, len(pending))
+                slice_size = (len(pending) + n_slices - 1) // n_slices
+                slices = [
+                    pending[i:i + slice_size]
+                    for i in range(0, len(pending), slice_size)
+                ]
 
-                def _submit_next_thread() -> bool:
-                    item = next(pending_iter, None)
-                    if item is None:
-                        return False
-                    ci, cs_, ce_ = item
-                    in_flight.add(
-                        pool.submit(_parallel_worker_chunk, ci, cs_, ce_)
-                    )
-                    return True
+                # Thread-safe, unbounded, no lock-tuning needed -
+                # results stream back one chunk at a time as each
+                # worker finishes it, with a sentinel per finished
+                # slice so this consumer loop knows when all
+                # n_slices workers are done without polling.
+                results_q: _stream_queue.SimpleQueue = _stream_queue.SimpleQueue()
+                _SLICE_DONE = object()
 
-                for _ in range(max_in_flight):
-                    if not _submit_next_thread():
-                        break
+                def _run_slice(slice_items: list) -> None:
+                    for ci, cs_, ce_ in slice_items:
+                        results_q.put(_parallel_worker_chunk(ci, cs_, ce_))
+                    results_q.put(_SLICE_DONE)
 
-                while in_flight:
-                    done, in_flight = wait(
-                        in_flight, return_when=FIRST_COMPLETED)
-                    for future in done:
-                        (chunk_index, chunk_x_out, z_idx,
-                         chunk_coeff_out) = future.result()
-                        _submit_next_thread()
+                slice_futures = [
+                    pool.submit(_run_slice, s) for s in slices
+                ]
 
-                        if checkpoint_path is not None:
-                            _append_parallel_checkpoint_chunk(
-                                checkpoint_path, completed_indices,
-                                chunk_index, chunk_x_out, z_idx,
-                                chunk_coeff_out, idx_dtype,
-                            )
+                done_slices = 0
+                while done_slices < len(slices):
+                    item = results_q.get()
+                    if item is _SLICE_DONE:
+                        done_slices += 1
+                        continue
+                    chunk_index, chunk_x_out, z_idx, chunk_coeff_out = item
 
-                        if assume_hermitian:
-                            _check_hermitian_violation(
-                                chunk_coeff_out, atol, chunk_x_out,
-                                z_idx, n_qubits
-                            )
-                        yield chunk_x_out, z_idx, chunk_coeff_out
+                    if checkpoint_path is not None:
+                        _append_parallel_checkpoint_chunk(
+                            checkpoint_path, completed_indices,
+                            chunk_index, chunk_x_out, z_idx,
+                            chunk_coeff_out, idx_dtype,
+                        )
+
+                    if assume_hermitian:
+                        _check_hermitian_violation(
+                            chunk_coeff_out, atol, chunk_x_out,
+                            z_idx, n_qubits
+                        )
+                    yield chunk_x_out, z_idx, chunk_coeff_out
+
+                # Propagate any exception raised inside a worker's
+                # slice (e.g. a genuine non-Hermitian input the
+                # per-chunk check above did not already catch and
+                # raise first, or an unexpected kernel error) - same
+                # contract as the dynamic path's future.result() call,
+                # which would have raised at the point of iteration.
+                for _f in slice_futures:
+                    _f.result()
         finally:
             # Restore rather than clear: a worker PROCESS legitimately
             # holds state here, and this function can be called from

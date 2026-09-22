@@ -219,16 +219,26 @@ rather than adding independent ones, so they measured worse: on a
 physical-core threads cost extra CPU cycles for no further wall-clock
 gain.
 
-`--eager-threads` (with `--parallel` and the thread executor) forces
-all `--n-workers` OS threads to exist before the first chunk is
-submitted, instead of `ThreadPoolExecutor`'s own default lazy
-spin-up (a new thread only on the first `submit()` that finds none
-idle). Measured directly: without it, the first several chunks of a
-run start staggered by a few hundred microseconds each rather than
-together, since each of the pool's first few `submit()` calls on a
-fresh pool forces a new OS thread creation. A one-time cost either
-way — this changes only *when* it is paid, not whether it is paid,
-and has no effect on the result or on `--executor process`.
+With the thread executor, chunks are split into exactly `--n-workers`
+contiguous slices up front and each worker drains its own slice
+directly — a static partition, not a shared work queue. Measured
+directly: fewer instructions, fewer cycles, better instruction-per-
+cycle throughput, and far tighter run-to-run variance than submitting
+one task per chunk to a shared queue, because it removes that queue's
+lock contention from the hot path almost entirely. Has no effect on
+the result or on `--executor process`, which still drains one task
+per chunk through a process pool.
+
+By default, all `--n-workers` OS threads are also forced to exist
+before the first chunk is submitted, instead of `ThreadPoolExecutor`'s
+own lazy spin-up (a new thread only on the first `submit()` that finds
+none idle). Measured directly: without this, the first several chunks
+of a run start staggered by a few hundred microseconds each rather
+than together, since each of the pool's first few `submit()` calls on
+a fresh pool forces a new OS thread creation. Pass `--no-eager-threads`
+to restore the old lazy spin-up — a one-time cost either way, this
+only changes *when* it is paid, not whether it is paid, and has no
+effect on the result or on `--executor process`.
 
 `paulikit regenerate-fixtures` recomputes the expected Pauli terms
 used by the test suite's correctness fixtures, using PennyLane as an
