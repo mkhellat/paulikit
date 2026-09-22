@@ -3133,17 +3133,75 @@ def parallel_decompose_arrays(
                     for _f in _eager_futures:
                         _f.result(timeout=30.0)
 
-                # Split `pending` into n_workers contiguous slices
-                # (ceiling division, so only the last slice may be
-                # shorter). n_slices is capped at len(pending) so a
-                # tiny job (fewer pending chunks than n_workers) never
-                # creates empty slices.
+                # Split `pending` into n_slices contiguous slices,
+                # CAPACITY-WEIGHTED by physical core, not equal-sized.
+                #
+                # Why: when n_workers does not evenly divide the
+                # physical core count, `pin_cpus[slice_index %
+                # len(pin_cpus)]` (below) necessarily pins more than
+                # one worker thread to the same core for at least one
+                # core - e.g. n_workers=5 on 4 cores pins slices 0 and
+                # 4 to the SAME core while slices 1-3 each get their
+                # own. Measured directly (paulikit-manuscript/debug/
+                # SESSION_QA.md Phase 39/40): giving every slice the
+                # SAME chunk count in that situation makes the two
+                # shared-core slices take ~1.57x as long, in every
+                # rep, not a chunk-content effect (a single-threaded,
+                # uncontended sweep of the identical chunk ranges
+                # showed only a 1.03x/noise-level difference) - a
+                # direct, mechanical consequence of two full workloads
+                # timesharing one core while neighboring cores get a
+                # dedicated one each.
+                #
+                # Fix: size each worker's slice inversely to how many
+                # workers share its assigned core (a worker alone on
+                # its core gets a full share; two workers sharing a
+                # core each get half), so the TOTAL chunk count
+                # assigned to any one physical core stays balanced
+                # even though individual worker THREAD counts per core
+                # are not. This is the naive 1/k model (k = workers
+                # sharing that core), not calibrated to the measured
+                # ~1.57x contention factor - deliberately simple and
+                # auditable; refine only if real measurement after
+                # this change shows the naive split under/over-
+                # corrects (see Phase 40's own note that 1/k assumes
+                # perfectly serialized sharing, while GIL-released
+                # kernels partially interleave, so the real optimum
+                # may sit between equal-count and a full 1/k split).
+                #
+                # n_slices is capped at len(pending) so a tiny job
+                # (fewer pending chunks than n_workers) never creates
+                # empty slices - unchanged from before.
                 n_slices = min(n_workers, len(pending))
-                slice_size = (len(pending) + n_slices - 1) // n_slices
-                slices = [
-                    pending[i:i + slice_size]
-                    for i in range(0, len(pending), slice_size)
+                if pin_cpus:
+                    _workers_per_core: dict[int, int] = {}
+                    for _w in range(n_slices):
+                        _c = pin_cpus[_w % len(pin_cpus)]
+                        _workers_per_core[_c] = _workers_per_core.get(_c, 0) + 1
+                    _capacity = [
+                        1.0 / _workers_per_core[pin_cpus[_w % len(pin_cpus)]]
+                        for _w in range(n_slices)
+                    ]
+                else:
+                    # No pinning available (non-Linux, or the physical-
+                    # core probe failed) - every slice gets equal
+                    # capacity, same as the original unweighted split.
+                    _capacity = [1.0] * n_slices
+                _total_capacity = sum(_capacity)
+                slice_sizes = [
+                    round(len(pending) * c / _total_capacity) for c in _capacity
                 ]
+                # Rounding can drift the total off len(pending) by a
+                # few items - correct on the LAST slice, matching the
+                # original code's own "only the last slice may be
+                # shorter" contract.
+                slice_sizes[-1] += len(pending) - sum(slice_sizes)
+
+                slices = []
+                _pos = 0
+                for _size in slice_sizes:
+                    slices.append(pending[_pos:_pos + _size])
+                    _pos += _size
 
                 # Thread-safe, unbounded, no lock-tuning needed -
                 # results stream back one chunk at a time as each
