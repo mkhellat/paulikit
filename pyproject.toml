@@ -137,7 +137,10 @@ archs = ["auto64"]
 # scipy is required by the exhaustive-verification tests (module-level
 # import); pennylane is importorskip'd. Keep the wheel test set lean.
 test-requires = ["pytest>=7", "scipy>=1.10"]
-test-command = "pytest {package}/tests -m 'not slow'"
+# Import gate lives in test-command (not before-test): cibuildwheel v4
+# creates the test venv and runs before-test *before* installing the
+# repaired wheel, so "import paulikit" there fails with ModuleNotFound.
+test-command = "python -c \"from paulikit._native import wht_native, coeffs_native, gather_native\" && pytest {package}/tests -m 'not slow'"
 
 # Do not build pauli_label_native in the wheel. It needs oneTBB, and
 # manylinux images either lack it or ship a layout that fails mid-
@@ -147,19 +150,10 @@ test-command = "pytest {package}/tests -m 'not slow'"
 # TBB install cannot produce a broken wheel build.
 config-settings = "setup-args=-Dnative=disabled"
 
-# Gate the wheel on the extensions that carry the performance, not on
-# the one that needs oneTBB.
-#
 # wht_kernel modules (wht_native, coeffs_native, gather_native,
 # hermitian_check_native) and cache_probe need only a C compiler and
-# Cython, both present in every manylinux image. pauli_label_native
-# is explicitly disabled above.
-#
-# The transform and coefficient kernels are different. Without them
-# the package silently takes the NumPy path, which is several times
-# slower - a wheel that "succeeded" that way would be a worse outcome
-# than an honest build failure, so it is checked explicitly.
-before-test = "python -c \"from paulikit._native import wht_native, coeffs_native, gather_native\""
+# Cython. The import line in test-command above fails the job if those
+# are missing from the installed wheel.
 
 [tool.cibuildwheel.linux]
 # No before-all TBB install: native/pauli_label is disabled for wheels.
