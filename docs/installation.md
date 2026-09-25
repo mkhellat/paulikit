@@ -121,7 +121,9 @@ pip install -e . --no-build-isolation \
 The compiled extensions are currently optional accelerators, not a
 hard requirement — prebuilt wheels are not yet on PyPI, so requiring
 a C toolchain for every `pip install` would be too heavy a default.
-CI builds manylinux wheels on tag / manual dispatch
-(`.github/workflows/paulikit-wheels.yml`); once those are published,
-the kernels can become a hard requirement matching the NumPy/SciPy
-model.
+CI builds manylinux wheels on tag / manual dispatch via
+`.github/workflows/paulikit-wheels.yml` on the GitHub mirror
+([github.com/mkhellat/paulikit](https://github.com/mkhellat/paulikit));
+Codeberg remains the canonical tree. Once those wheels are published
+to PyPI, the kernels can become a hard requirement matching the
+NumPy/SciPy model.

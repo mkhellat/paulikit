@@ -17,8 +17,11 @@ versions; see the README's Status section.
 - Compiled gather and Hermiticity-check kernels under `wht_kernel`,
   plus runtime-dispatched x86-64-v3 twins of the WHT and coefficient
   kernels.
-- GitHub Actions workflow that builds manylinux wheels (x86_64 /
-  aarch64, CPython 3.10–3.13) and an sdist on tag / manual dispatch.
+- GitHub Actions workflow (`.github/workflows/paulikit-wheels.yml` on
+  the GitHub mirror) that builds manylinux wheels (x86_64 / aarch64,
+  CPython 3.10–3.13) and an sdist on tag / manual dispatch. Codeberg
+  remains the canonical repository; hosted Forgejo runners are not
+  used for the manylinux matrix.
 
 ### Changed
 
@@ -102,7 +105,8 @@ First release.
 
 - Prebuilt wheels are not yet published on PyPI, so the compiled
   extensions remain optional accelerators rather than hard
-  requirements. CI builds manylinux wheels on tag / manual dispatch.
+  requirements. Manylinux wheels build on the GitHub mirror via
+  `.github/workflows/paulikit-wheels.yml`; Codeberg is canonical.
 - CPU pinning and topology detection are Linux-only, with a documented
   fallback elsewhere; the non-Linux paths are not exercised in CI.
 

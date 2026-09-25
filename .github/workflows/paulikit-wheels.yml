@@ -3,9 +3,13 @@
 # Linux x86_64 + aarch64, CPython 3.10-3.13, musllinux/Windows/macOS
 # skipped by design.
 #
-# Manual or tag-triggered only — not on every push. Kernel import
-# gates (wht_native / coeffs_native) run inside cibuildwheel's
-# before-test so a wheel without the transform path fails the job.
+# Runs on the GitHub mirror (github.com/mkhellat/paulikit). Codeberg
+# (codeberg.org/beavernets/paulikit) is the canonical repository;
+# hosted Forgejo Actions runners are not used for this matrix (need
+# Docker-capable manylinux builds). Manual or tag-triggered only —
+# not on every push. Kernel import gates (wht_native / coeffs_native /
+# gather_native) run inside cibuildwheel's before-test so a wheel
+# without the transform path fails the job.
 
 name: paulikit wheels
 

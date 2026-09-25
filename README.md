@@ -65,8 +65,8 @@ Requires Python >= 3.10; the only runtime dependency is NumPy.
 
 ## Installation
 
-Install from a source checkout (this is the supported path for anyone
-cloning the repository):
+Install from a source checkout (this is the supported path until
+prebuilt wheels are on PyPI):
 
 ```bash
 ./configure && make          # creates a venv, generates a Makefile
@@ -90,7 +90,11 @@ pip install -e ".[dev]" --no-build-isolation
 ```
 
 See [`docs/installation.md`](docs/installation.md) for editable-install
-sequencing and how to force the native extensions on or off.
+sequencing and how to force the native extensions on or off. Canonical
+development is on
+[Codeberg](https://codeberg.org/beavernets/paulikit); a
+[GitHub mirror](https://github.com/mkhellat/paulikit) runs the
+manylinux wheel workflow.
 
 
 ## Usage
@@ -174,6 +178,7 @@ src/paulikit/
     hamiltonian.py      Coupled-oscillator Hamiltonian construction
     pauli_utils.py      Pauli-matrix helpers (label <-> matrix)
     algorithms/fwht.py  The decomposition algorithm
+    algorithms/autotune.py  Cache-aware chunk sizing
     testing/fixtures.py Known-good operators and expected outputs
     _native/            Optional compiled kernels, pure-Python fallback
     cli.py              Command-line interface
@@ -190,11 +195,13 @@ annotated tree.
 
 ```bash
 pytest
+# or: make check
 ```
 
-(from this directory; `pyproject.toml` sets `testpaths = ["tests"]`,
-and the package must be installed — `pip install -e ".[test]"` — for
-imports to resolve).
+(from this directory; `pyproject.toml` sets `testpaths = ["tests"]`
+and skips `@pytest.mark.slow` by default. The package must be
+installed — `pip install -e ".[test]"` — for imports to resolve).
+323 default tests; 8 further slow benchmark comparisons.
 
 
 ## Algorithms implemented
@@ -271,8 +278,10 @@ Known gaps:
 
 - Prebuilt wheels are not yet on PyPI, so the compiled extensions
   remain optional accelerators rather than a hard requirement —
-  install from source as above (CI builds manylinux wheels on tag /
-  manual dispatch; publish comes next).
+  install from source as above. Manylinux wheels (and the sdist) are
+  built by `.github/workflows/paulikit-wheels.yml` on the GitHub
+  mirror (`v*` tag or manual dispatch); publishing them is the next
+  release step. Codeberg is the canonical tree.
 - CPU pinning and topology detection are Linux-only, with a documented
   fallback elsewhere; the non-Linux paths are not yet exercised in CI.
 
