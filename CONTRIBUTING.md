@@ -6,11 +6,18 @@ with it.
 
 ## Where the project lives
 
-Development happens at
-[codeberg.org/beavernets/paulikit](https://codeberg.org/beavernets/paulikit),
-mirrored to
-[github.com/mkhellat/paulikit](https://github.com/mkhellat/paulikit).
-Issues and pull requests are welcome at either.
+**Canonical repository:**
+[codeberg.org/beavernets/paulikit](https://codeberg.org/beavernets/paulikit)
+(`origin`).
+
+**Mirror:**
+[github.com/mkhellat/paulikit](https://github.com/mkhellat/paulikit)
+(`github`).
+
+Issues and pull requests are welcome at either. Prefer Codeberg when
+you have a choice; the GitHub remote exists so Linux wheel CI can use
+GitHub-hosted runners with Docker (manylinux), which Codeberg's
+hosted Forgejo Actions runners are not sized for.
 
 ## Building
 
@@ -22,6 +29,7 @@ the setup:
 ./configure          # creates a venv, reports what the toolchain offers
 make                 # editable install with the correct sequencing
 make check           # run the test suite
+make docs            # Sphinx HTML under docs/_build/html
 ```
 
 `./configure` prints an itemised capability report - compiler, Cython,
@@ -54,6 +62,22 @@ dependencies installed - a few tests skip in that configuration, which
 is deliberate. That is the same environment the pure-Python fallback
 exists to serve, so it needs to stay green there.
 
+## Wheels and releases
+
+Until wheels are published on PyPI, install from a source checkout as
+in the README.
+
+Manylinux wheels (x86_64 and aarch64, CPython 3.10–3.13) and the sdist
+are built by `.github/workflows/paulikit-wheels.yml` on the GitHub
+mirror: push a `v*` tag, or run the workflow manually. The job fails
+if `wht_native` / `coeffs_native` / `gather_native` are missing from
+the wheel. musllinux, macOS, and Windows are intentionally not wheel
+targets; those platforms use the sdist and documented fallbacks.
+
+Codeberg remains the source of truth for the tree. Do not expect the
+same cibuildwheel matrix to run on Codeberg's hosted Actions without
+a self-hosted runner that can drive Docker.
+
 ## What a change should carry
 
 - **A test.** A bug fix should come with a test that fails without it.
@@ -68,7 +92,11 @@ exists to serve, so it needs to stay green there.
   (`perf stat -e instructions:u,cycles:u`), report the problem size,
   and replicate before quoting a ratio.
 - **Documentation, if behaviour changed.** Including the docstring, so
-  the API reference stays correct.
+  the API reference stays correct. User-visible behaviour also updates
+  the README and/or CHANGELOG `[Unreleased]` section.
+- **Atomic commits.** One reviewable design step per commit (see the
+  repository history). Prefer a few closely related files over a
+  mega-commit that mixes engine, UI, and docs.
 
 ## Style
 
