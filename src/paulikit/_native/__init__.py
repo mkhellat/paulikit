@@ -3,22 +3,23 @@
 
 """Internal package: the optional compiled extensions.
 
-Six extensions may be built here, gated by three feature options in
-``meson.options``::
+Several extensions may be built here, gated by three feature options
+in ``meson.options``::
 
-    wht_kernel   ``wht_native``         the Walsh-Hadamard butterfly
-                 ``wht_native_v3``      same, compiled -march=x86-64-v3
-                 ``coeffs_native``      phase, scaling, thresholding
-                                        and index emission
-                 ``coeffs_native_v3``   same, compiled -march=x86-64-v3
-    native       ``pauli_label_native`` Pauli label strings
-    cache_probe  ``cache_probe``        empirical cache sizing
+    wht_kernel   ``wht_native``              Walsh-Hadamard butterfly
+                 ``wht_native_v3``           same, -march=x86-64-v3
+                 ``coeffs_native``           phase, scaling, threshold,
+                                             index emission
+                 ``coeffs_native_v3``        same, -march=x86-64-v3
+                 ``gather_native``           dense XOR-row gather
+                 ``hermitian_check_native``  fused Hermiticity check
+    native       ``pauli_label_native``      Pauli label strings
+    cache_probe  ``cache_probe``             empirical cache sizing
 
 Which are present depends on the toolchain available at build time.
-``wht_native``, ``coeffs_native`` and ``cache_probe`` need only a C
-compiler and Cython. ``pauli_label_native`` additionally needs C++
-and oneTBB, so it is the one most likely to be absent from a prebuilt
-wheel.
+The ``wht_kernel`` and ``cache_probe`` modules need only a C compiler
+and Cython. ``pauli_label_native`` additionally needs C++ and oneTBB,
+so it is the one most likely to be absent from a prebuilt wheel.
 
 The ``_v3`` modules are the SAME source as their non-``_v3``
 counterpart, compiled a second time under ``-march=x86-64-v3``

@@ -3,13 +3,13 @@
 Full installation reference. For the common case, the README's
 Installation section is enough; this document covers the build
 system's requirements, the editable-install sequencing, and the
-optional native extension in detail.
+optional native extensions in detail.
 
 paulikit is built with [meson-python](https://mesonbuild.com/meson-python/)
-(the same build backend NumPy and SciPy use), and optionally compiles a
-native (Cython/C++) `pauli_label` kernel, which materially reduces
-label-generation cost — see [Native extension](#native-extension)
-below.
+(the same build backend NumPy and SciPy use), and optionally compiles
+several Cython/C(/C++) kernels that accelerate the transform, gather,
+coefficient emission, Hermiticity check, Pauli labels, and cache
+probe — see [Native extensions](#native-extensions) below.
 
 **Recommended for development:** run `./configure` from this
 directory. It creates/reuses a dedicated venv (default
@@ -55,6 +55,7 @@ With test/profiling dependencies:
 ```bash
 pip install -e ".[test]" --no-build-isolation   # pytest, PennyLane (for fixture regeneration/reference checks), scipy
 pip install -e ".[dev]" --no-build-isolation    # the above, plus Cython and ruff
+pip install -e ".[docs]" --no-build-isolation   # Sphinx / Furo / MyST stack for `make docs`
 pip install -e ".[sparse]" --no-build-isolation # just scipy, for build_hamiltonian(sparse=True) / pad_to_power_of_two(sparse=True)
 ```
 
@@ -75,33 +76,51 @@ pure-Python-installable — no C toolchain is needed just to build the
 pure-Python parts of the package.
 
 
-## Native extension
+## Native extensions
 
-By default (`-Dnative=auto`) the build compiles
-`paulikit._native.pauli_label_native`, a Cython/C++ port of the
-per-term label-generation kernel, if a C++ toolchain and
-[oneTBB](https://github.com/oneapi-src/oneTBB) are available. If they
-aren't, the build falls back to pure Python automatically — no error,
-just slower label generation, with a one-time `UserWarning` the first
-time the fallback path actually runs.
+Three independent meson feature options gate the compiled modules
+(defaults are all `auto`: build if the toolchain is present, otherwise
+fall back quietly at import time with a one-time warning when a
+fallback path first runs):
 
-To force the behavior explicitly:
+| meson option | Modules | Needs |
+|---|---|---|
+| `wht_kernel` | `wht_native` (+ optional `wht_native_v3`), `coeffs_native` (+ optional `coeffs_native_v3`), `gather_native`, `hermitian_check_native` | C compiler + Cython ≥ 3.0 |
+| `native` | `pauli_label_native` | C++ + Cython ≥ 3.0 + [oneTBB](https://github.com/oneapi-src/oneTBB) |
+| `cache_probe` | `cache_probe` | C compiler + Cython ≥ 3.0 |
+
+The `wht_kernel` set carries the transform, gather, coefficient
+emission, and Hermiticity check — these are the modules that matter
+for throughput and for the threaded drain. `pauli_label_native` only
+accelerates label-string generation (the dict-returning APIs).
+`cache_probe` feeds `paulikit.algorithms.autotune`'s chunk sizing.
+
+The optional `_v3` twins of the WHT and coefficient kernels are the
+same source compiled a second time under `-march=x86-64-v3` when the
+build toolchain accepts that flag. The public API picks between a
+module and its `_v3` twin at **import** time from a runtime CPU check,
+never at build time, so a wheel built on a newer CPU stays correct
+(just slower) on an older one.
+
+To force behaviour explicitly:
 
 ```bash
-# Fail the build if the native extension can't be compiled:
-pip install -e . --no-build-isolation --config-settings=setup-args="-Dnative=enabled"
+# Fail the build if a feature cannot be compiled:
+pip install -e . --no-build-isolation \
+  --config-settings=setup-args="-Dwht_kernel=enabled" \
+  --config-settings=setup-args="-Dnative=enabled" \
+  --config-settings=setup-args="-Dcache_probe=enabled"
 
-# Force pure-Python-only, even if a toolchain is available:
-pip install -e . --no-build-isolation --config-settings=setup-args="-Dnative=disabled"
+# Force pure-Python / declared-cache fallbacks:
+pip install -e . --no-build-isolation \
+  --config-settings=setup-args="-Dwht_kernel=disabled" \
+  --config-settings=setup-args="-Dnative=disabled" \
+  --config-settings=setup-args="-Dcache_probe=disabled"
 ```
 
-The native extension is currently an optional, best-effort
-accelerator, not a hard requirement — paulikit has no prebuilt-wheel
-CI yet, so requiring a C++ toolchain for every `pip install` would be
-too heavy a default. This is a deliberate, temporary trade-off, not
-a permanent architecture decision. Migrating to prebuilt wheels (so
-the extension can
-become a hard requirement, matching the NumPy/SciPy model) is tracked
-as a near-term goal, not indefinitely deferred.
-
-
+The compiled extensions are currently optional accelerators, not a
+hard requirement — paulikit has no prebuilt-wheel CI yet, so requiring
+a C toolchain for every `pip install` would be too heavy a default.
+This is a deliberate, temporary trade-off. Migrating to prebuilt
+wheels (so the kernels can become a hard requirement, matching the
+NumPy/SciPy model) is tracked as a near-term goal.

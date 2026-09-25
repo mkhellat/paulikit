@@ -6,12 +6,21 @@ paulikit._native
    :undoc-members:
    :show-inheritance:
 
-Optional compiled extension (Cython/C++) used by
-``paulikit.algorithms.fwht`` when available, with a pure-Python
-fallback otherwise. See :doc:`../installation` for build details and
-the rationale behind keeping the extension optional.
+Optional compiled extensions (Cython/C and Cython/C++) used by
+``paulikit.algorithms.fwht`` and ``paulikit.algorithms.autotune`` when
+available, with pure-Python / NumPy / declared-cache fallbacks
+otherwise. Three meson feature options gate them:
 
-Autodoc note: this page only renders members if the extension was
-compiled at doc-build time (``-Dnative=auto`` or ``enabled``). With
-``-Dnative=disabled``, ``paulikit._native.pauli_label_native`` doesn't
-exist and this page will be empty aside from this note.
+* ``wht_kernel`` — ``wht_native`` (and optional ``wht_native_v3``),
+  ``coeffs_native`` (and optional ``coeffs_native_v3``),
+  ``gather_native``, ``hermitian_check_native``
+* ``native`` — ``pauli_label_native`` (needs C++ and oneTBB)
+* ``cache_probe`` — ``cache_probe``
+
+See :doc:`../installation` for build details and the rationale behind
+keeping the extensions optional.
+
+Autodoc note: this page only renders members for modules that were
+compiled at doc-build time. With a feature disabled, the corresponding
+extension modules do not exist and that part of the page is empty
+aside from this note.
