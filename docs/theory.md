@@ -204,6 +204,29 @@ nonzero terms of the fixture — see
 `tests/test_fwht.py::test_fwht_matches_fixture_expected_terms` for the
 automated, full-fixture version of this check.
 
+## 5. From the formula to a memory-bounded implementation
+
+The derivation above is over every $(x, z)$ pair. In practice many
+$x$ values never appear as a nonzero anti-diagonal of $H$ (the
+*active-$x$* set), so the implementation iterates only those $x$ and
+transforms one anti-diagonal at a time. At large $n$ even the active
+set is huge, so active $x$-rows are further split into independent
+*chunks*: each chunk runs the gather → Walsh–Hadamard → phase /
+threshold pipeline and emits survivors before the next chunk begins.
+Because chunks do not share mutable state, they can also run
+concurrently (thread or process drain). Peak resident memory is then
+set by the live chunk, not by the total term count — which is why a
+14–16 qubit sparse decomposition stays in tens of MiB while a dense
+$2^n \times 2^n$ operator of the same size does not fit. Measured
+RSS figures and the measurement protocol live in the companion
+measurements deposit; this page only states the design, not those
+numbers.
+
+`chunk_size` omitted in the library APIs is filled by
+`paulikit.algorithms.autotune` from an empirical cache-latency probe
+(or declared cache sizes if the probe was not built). The CLI's
+`--chunk-size` is explicit by design.
+
 ## References
 
 - [Babbush et al., *Exponential Quantum Speedup in Simulating Coupled
