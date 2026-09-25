@@ -27,6 +27,10 @@ config.status
 # Sphinx output
 docs/_build/
 
+# Local agent plans/specs and git worktrees — never ship these.
+plans/
+.worktrees/
+
 # Lockfiles are deliberately not tracked: this is a library, not an
 # application, so pinning a resolved dependency set here would
 # constrain downstreams without benefiting them.
