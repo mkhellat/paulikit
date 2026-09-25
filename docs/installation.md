@@ -119,8 +119,9 @@ pip install -e . --no-build-isolation \
 ```
 
 The compiled extensions are currently optional accelerators, not a
-hard requirement — paulikit has no prebuilt-wheel CI yet, so requiring
+hard requirement — prebuilt wheels are not yet on PyPI, so requiring
 a C toolchain for every `pip install` would be too heavy a default.
-This is a deliberate, temporary trade-off. Migrating to prebuilt
-wheels (so the kernels can become a hard requirement, matching the
-NumPy/SciPy model) is tracked as a near-term goal.
+CI builds manylinux wheels on tag / manual dispatch
+(`.github/workflows/paulikit-wheels.yml`); once those are published,
+the kernels can become a hard requirement matching the NumPy/SciPy
+model.

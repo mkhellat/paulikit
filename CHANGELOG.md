@@ -9,6 +9,34 @@ versions; see the README's Status section.
 
 ## [Unreleased]
 
+### Added
+
+- Threaded drain for `parallel_decompose_arrays` (`executor="thread"` /
+  `"auto"`), with physical-core pinning, capacity-weighted slices,
+  work-stealing, and optional eager thread spin-up.
+- Compiled gather and Hermiticity-check kernels under `wht_kernel`,
+  plus runtime-dispatched x86-64-v3 twins of the WHT and coefficient
+  kernels.
+- GitHub Actions workflow that builds manylinux wheels (x86_64 /
+  aarch64, CPython 3.10–3.13) and an sdist on tag / manual dispatch.
+
+### Changed
+
+- README Usage leads with the measured sparse/dense fastest paths;
+  Sphinx tutorial, installation, and native docs match the multi-kernel
+  surface; `--chunk-size` help no longer claims auto-tuning is absent
+  from the library APIs.
+
+### Fixed
+
+- `make check` no longer dumps expected autotune/fork warnings from
+  intentional no-probe and process-pool tests.
+
+### Removed
+
+- Stale Status/CHANGELOG claim of an unexplained 14-to-15 qubit
+  parallel-efficiency step under the process-pool drain.
+
 ## [0.1.0] - 2026-09-10
 
 First release.
@@ -43,11 +71,13 @@ First release.
   order a pool returns it in, and a torn tail means exactly "that
   chunk was not recorded".
 
-- **Optional compiled kernels.** A cache-tiled Walsh-Hadamard
-  butterfly, a fused coefficient kernel, a Pauli label kernel (with a
-  oneTBB-parallel variant), and an empirical cache-latency probe. All
-  four are optional: the package is correct and installable with no C
-  toolchain, and reports once when a fallback path is taken.
+- **Optional compiled kernels.** Under three meson options:
+  `wht_kernel` (Walsh–Hadamard butterfly, fused coefficients, dense
+  gather, Hermiticity check, with optional x86-64-v3 twins), `native`
+  (Pauli label kernel with a oneTBB-parallel variant), and
+  `cache_probe` (empirical cache-latency probe). All are optional: the
+  package is correct and installable with no C toolchain, and reports
+  once when a fallback path is taken.
 
 - **Cache-aware auto-tuning.** `paulikit.algorithms.autotune` sizes
   chunks against measured cache boundaries, interpolating between
@@ -61,8 +91,8 @@ First release.
   not sampled - up to 91,652,096 terms at 14 qubits, Hermitian and
   non-Hermitian. Artifacts and method under `verification/`.
 
-- **Test suite.** 234 tests, plus 8 slow benchmark comparisons
-  excluded by default.
+- **Test suite.** 323 default tests (8 further slow benchmark
+  comparisons excluded by default).
 
 - **Documentation.** Installation, tutorial, theory, background,
   non-Hermitian operators, annotated source tree, and an API
@@ -70,8 +100,9 @@ First release.
 
 ### Known limitations
 
-- Prebuilt wheels are not yet published, so the compiled extensions
-  remain optional accelerators rather than hard requirements.
+- Prebuilt wheels are not yet published on PyPI, so the compiled
+  extensions remain optional accelerators rather than hard
+  requirements. CI builds manylinux wheels on tag / manual dispatch.
 - CPU pinning and topology detection are Linux-only, with a documented
   fallback elsewhere; the non-Linux paths are not exercised in CI.
 

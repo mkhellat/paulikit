@@ -76,9 +76,9 @@ make check                   # run the test suite
 `./configure` prints a capability report (compiler, Cython, oneTBB,
 cache hierarchy, NumPy's BLAS backend) and generates a Makefile with
 the standard GNU targets. The build optionally compiles a native
-Cython/C++ kernel; if the toolchain is unavailable it falls back to
-pure Python automatically, with a warning the first time that path
-runs.
+Cython/C++ set of kernels; if the toolchain is unavailable it falls
+back to pure Python automatically, with a warning the first time that
+path runs.
 
 Equivalent manual sequence (same result as `make`):
 
@@ -90,7 +90,7 @@ pip install -e ".[dev]" --no-build-isolation
 ```
 
 See [`docs/installation.md`](docs/installation.md) for editable-install
-sequencing and how to force the native extension on or off.
+sequencing and how to force the native extensions on or off.
 
 
 ## Usage
@@ -244,7 +244,8 @@ whole-package correctness evidence is under **Correctness** below):
   can also run, both agree exactly on term count and on coefficients
   within tolerance. PennyLane is a test-only dependency and is never
   imported by `paulikit.algorithms`.
-- **Regression suite.** 234 tests, including crash-recovery and
+- **Regression suite.** 323 default tests (8 further slow benchmark
+  comparisons excluded by default), including crash-recovery and
   checkpoint-format cases.
 
 No performance comparison table is maintained in this README —
@@ -259,17 +260,19 @@ repository.
 Alpha. The API is usable and the correctness evidence is strong, but
 the version is 0.x and signatures may still change.
 
-Implemented and verified: the FWHT decomposition with a native
-label kernel, sparsity-aware coefficients, streaming output with
-bounded memory, chunked and parallel execution with cache-aware
+Implemented and verified: the FWHT decomposition with optional
+compiled kernels (transform, coefficients, gather, Hermiticity check,
+labels, cache probe), sparsity-aware coefficients, streaming output
+with bounded memory, chunked and parallel execution with cache-aware
 auto-tuning, binary checkpoint/restart, and exhaustive verification to
 91,652,096 terms at 14 qubits.
 
 Known gaps:
 
-- Prebuilt wheels are not yet published, so the native extension
-  remains an optional accelerator rather than a hard requirement —
-  install from source as above.
+- Prebuilt wheels are not yet on PyPI, so the compiled extensions
+  remain optional accelerators rather than a hard requirement —
+  install from source as above (CI builds manylinux wheels on tag /
+  manual dispatch; publish comes next).
 - CPU pinning and topology detection are Linux-only, with a documented
   fallback elsewhere; the non-Linux paths are not yet exercised in CI.
 
