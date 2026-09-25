@@ -8,13 +8,17 @@ signatures, see the {doc}`API reference <api/index>`.
 
 ## Installation
 
+From a source checkout (the supported path today — prebuilt wheels
+are not yet published):
+
 ```bash
-pip install paulikit
+./configure && make
 ```
 
-Or, from a checkout of the repository:
+Or the equivalent editable install:
 
 ```bash
+pip install numpy meson-python cython ninja
 pip install -e . --no-build-isolation
 ```
 
@@ -23,11 +27,13 @@ is the only runtime dependency). The command-line examples below
 assume the `paulikit` console script is on your `PATH`, which the
 install above sets up automatically.
 
-The install above also compiles a native (Cython/C++) label-generation
-kernel if a C++ toolchain and oneTBB are available, for faster
-`fwht_pauli_terms` — falling back to pure Python automatically
-otherwise. See the project README's "Native extension" section for
-details; nothing in this tutorial depends on which path is active.
+The build optionally compiles several Cython kernels (Walsh–Hadamard
+butterfly, coefficients, gather, Hermiticity check, Pauli labels,
+cache probe) when a C/C++ toolchain is available — falling back to
+pure Python / NumPy automatically otherwise. See {doc}`installation`
+for the meson options; nothing in the small examples below depends on
+which path is active, but the large-scale recipes in
+[Fastest paths](#fastest-paths) do.
 
 ## 1. Building a Hamiltonian
 
@@ -132,6 +138,48 @@ every fixture (see `tests/test_fwht.py`), and it's good practice to
 run it yourself whenever decomposing a new Hamiltonian you haven't
 validated before.
 
+## Fastest paths
+
+Two recipes cover the measured high-performance configurations.
+Prefer `executor="thread"` (or CLI `--executor thread` / `auto`) when
+the compiled `wht_kernel` modules are present.
+
+**Sparse / large-N (CLI) — threaded drain, chunk size 2.** Labels are
+not built; peak RSS stays tens of MiB at sizes a dense matrix cannot
+hold:
+
+```bash
+paulikit decompose --n-oscillators 150 --chunk-size 2 --parallel \
+    --executor thread
+# optional: --n-workers N   # default = physical cores
+# optional: --checkpoint PATH  # binary chunk-framed restart
+```
+
+**Dense fast path (library) — skip the sparsity scan.** The CLI does
+not yet expose `assume_dense`; call the array API directly:
+
+```python
+from paulikit.algorithms.fwht import parallel_decompose_arrays
+
+# H: dense complex128 array, shape (2**n, 2**n)
+for x, z, coeff in parallel_decompose_arrays(
+    H,
+    chunk_size=2,
+    assume_dense=True,
+    n_workers=1,           # or physical-core count for multi-core
+    executor="thread",
+):
+    ...
+```
+
+Publication measurements use dense qubits=13 and sparse $N=300$ with
+these same knobs. Measured figures and the protocol live in the
+companion measurements deposit, not in this tutorial.
+
+For labelled small operators, keep using `fwht_pauli_terms` as in
+§3. For large operators prefer `parallel_decompose_arrays` over
+collecting a full label dict.
+
 ## 5. Using the command-line interface
 
 For quick exploration without writing a script, the `paulikit`
@@ -178,14 +226,24 @@ worth checking against your own run.)
 
 `--parallel` runs the decomposition across multiple workers through
 `parallel_decompose_arrays`, which is the path that scales. It needs
-`--chunk-size`:
+`--chunk-size` (the CLI does not auto-tune this flag; pick a value —
+`2` is the publication default for sparse large-$N$ work):
 
 ```console
-$ paulikit decompose --n-oscillators 150 --chunk-size 2 --parallel
+$ paulikit decompose --n-oscillators 150 --chunk-size 2 --parallel \
+      --executor thread
 N=150 oscillators, 14 qubits, 16384x16384 padded Hamiltonian
-Decomposition time (parallel, executor=auto): ...
+Decomposition time (parallel, executor=thread): ...
 Chunks: 5595, nonzero Pauli terms: 91652096
 ```
+
+Related flags for the same large-$N$ regime:
+
+- `--stream` — sequential chunked streaming via `fwht_pauli_terms_iter`
+  (labels per chunk; requires `--chunk-size`). Use when you want
+  labelled dicts without the multi-core drain.
+- `--checkpoint PATH` — write a binary chunk-framed checkpoint after
+  each completed chunk so a long run can resume after interruption.
 
 Two things this path does differently, both deliberate:
 
@@ -251,52 +309,21 @@ argument details on any of these.
 
 ## 6. Multi-core decomposition and the array-yielding API
 
-> **Read the end of this section before choosing a function for
-> speed.** Since the transform moved into compiled C kernels, whether
-> the multi-core path beats the sequential one depends on which
-> executor and build you're using — see "Which executor, and why it
-> matters" below. It is always the right choice for streaming and
-> bounded memory, independent of throughput.
+> **Start from [Fastest paths](#fastest-paths) for real work.** This
+> section explains the two library APIs underneath those recipes.
+> Throughput depends on which executor and build you use — see
+> "Which executor, and why it matters" below. The array-yielding path
+> is always the right choice for streaming and bounded memory,
+> independent of throughput.
 
-For a large Hamiltonian, `paulikit.algorithms.fwht.parallel_decompose`
-spreads the FWHT coefficient math for each chunk across a
-`ProcessPoolExecutor`, then streams back `dict[str, complex]` chunks
-just like `fwht_pauli_terms_iter`:
-
-```python
-from paulikit.algorithms.fwht import parallel_decompose
-
-for chunk in parallel_decompose(H_padded):
-    ...
-```
-
-This is the right tool when you actually want every term's Pauli
-label. But it comes with a caveat worth knowing about before you reach
-for it purely for speed: building the label string and dict entry for
-every term happens in the single parent process, not in the worker
-pool, and at large problem sizes that step dominates the function's
-own runtime. Measured directly at $N=150$ (91.6 million terms), it is
-about 82% of total runtime — a serial fraction that, by Amdahl's law,
-caps the achievable speedup for the dict-returning API no matter how
-many cores are thrown at the problem. (The array-yielding API added
-later removes that ceiling; see below.) This isn't a defect to be
-fixed later; it's an inherent cost of returning fully-labeled Python
-dicts at that scale, and `parallel_decompose` remains the correct,
-supported choice whenever you need those labels.
-
-When you don't need every label — for instance, filtering to the
-largest-magnitude terms, or feeding coefficients straight into a
-numerical routine that never looks at the Pauli string itself —
-`parallel_decompose_arrays` skips that serial labeling step entirely.
-It shares `parallel_decompose`'s pool, chunking, auto-tuning, and
-checkpoint machinery exactly (checkpoints are even interchangeable
-between the two functions — both write the same binary, chunk-framed
-format through one shared writer, so a checkpoint started under one
-function resumes cleanly under the other), but its drain loop yields
-each chunk's raw
-`(x, z, coeff)` NumPy arrays — symplectic `x`/`z` bitmasks and
-`complex128` coefficients — instead of building labels and a dict from
-them:
+For large operators the default recommendation is
+`parallel_decompose_arrays`: it yields raw `(x, z, coeff)` NumPy
+arrays, supports `executor="thread"` / `"process"` / `"auto"`,
+auto-tunes `chunk_size` when omitted, and shares the binary
+chunk-framed checkpoint format with the labelled API. Use it when you
+do not need every Pauli label up front — for instance filtering to
+the largest-magnitude terms, or feeding coefficients into a numerical
+routine that never looks at the string itself:
 
 ```python
 import numpy as np
@@ -322,6 +349,15 @@ How much does this actually buy you? Removing per-term Python work
 from the drain loop is a real and well-understood fix for a real
 serial bottleneck — the label-and-dict path scaled *negatively*,
 where adding workers made it slower.
+
+When you *do* need every term's Pauli label, use
+`parallel_decompose`. It still spreads chunk coefficient work across
+workers, but always through a process pool, and builds
+`dict[str, complex]` (or `float`) labels in the parent process — the
+same serial cost the array API removes. Checkpoints are interchangeable
+between the two functions (same binary chunk-framed format). Prefer it
+only when the labelled dict is the product you want; otherwise stay on
+`parallel_decompose_arrays`.
 
 ### Which executor, and why it matters
 
