@@ -122,36 +122,39 @@ target-version = "py310"
 select = ["E", "F", "I", "UP", "B"]
 
 [tool.cibuildwheel]
-# Scope for the first release: Linux x86_64 and aarch64, CPython
-# 3.10-3.13. macOS and Windows are covered by the sdist rather than by
-# wheels, because the cache-latency probe and CPU-feature detection
-# read Linux interfaces and their fallbacks are not yet exercised on
-# those platforms. Shipping wheels for a platform nothing tests would
-# claim more than has been verified.
+# Scope for the first release: Linux glibc x86_64 and aarch64, CPython
+# 3.10-3.13. musllinux, macOS, and Windows are covered by the sdist
+# rather than by wheels: the cache-latency probe and CPU-feature
+# detection read Linux/glibc interfaces, and their fallbacks are not
+# yet exercised on those platforms. Shipping wheels for a platform
+# nothing tests would claim more than has been verified. configure
+# reports the musllinux skip explicitly when run on a musl host.
 build = "cp310-* cp311-* cp312-* cp313-*"
-skip = "*_i686 *-win* *-macosx*"
+skip = "*-musllinux* *_i686 *-win* *-macosx*"
 archs = ["auto64"]
-test-requires = ["pytest>=7"]
+# scipy is required by the exhaustive-verification tests (module-level
+# import); pennylane is importorskip'd. Keep the wheel test set lean.
+test-requires = ["pytest>=7", "scipy>=1.10"]
 test-command = "pytest {package}/tests -m 'not slow'"
 
 # Gate the wheel on the extensions that carry the performance, not on
 # the one that needs oneTBB.
 #
-# Three of the four extensions - wht_native, coeffs_native and
-# cache_probe - need only a C compiler and Cython, both present in
-# every manylinux image. pauli_label_native additionally needs C++ and
-# oneTBB, which are not, so it may legitimately be absent from a
-# published wheel while the package still works: label generation
-# falls back to pure Python.
+# wht_kernel modules (wht_native, coeffs_native, gather_native,
+# hermitian_check_native) and cache_probe need only a C compiler and
+# Cython, both present in every manylinux image. pauli_label_native
+# additionally needs C++ and oneTBB, which may be absent, so it may
+# legitimately be missing from a published wheel while the package
+# still works: label generation falls back to pure Python.
 #
 # The transform and coefficient kernels are different. Without them
 # the package silently takes the NumPy path, which is several times
 # slower - a wheel that "succeeded" that way would be a worse outcome
 # than an honest build failure, so it is checked explicitly.
-before-test = "python -c \"from paulikit._native import wht_native, coeffs_native\""
+before-test = "python -c \"from paulikit._native import wht_native, coeffs_native, gather_native\""
 
 [tool.cibuildwheel.linux]
 # oneTBB is not in the manylinux base image. Installing it lets
 # pauli_label_native build too; if the install fails the build still
 # succeeds without it, which is the intended optional behaviour.
-before-all = "dnf install -y tbb-devel || true"
+before-all = "dnf install -y tbb-devel || yum install -y tbb-devel || true"
