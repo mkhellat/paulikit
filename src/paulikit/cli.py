@@ -354,9 +354,11 @@ def build_parser():
              "of one (n_active, dim) array all at once, bounding peak "
              "memory to roughly chunk_size * dim complex entries - needed "
              "at large N where the whole-array approach exhausts memory "
-             "(default: None, i.e. no chunking). Not yet auto-tuned - "
-             "pick a value, or omit this flag if N is small enough not "
-             "to need it. Required if --stream is set.",
+             "(default: None). On the library APIs "
+             "(parallel_decompose / parallel_decompose_arrays) omitting "
+             "chunk_size auto-tunes against measured cache boundaries; "
+             "this CLI flag is always explicit. Required with --stream "
+             "and with --parallel.",
     )
     decompose_parser.add_argument(
         "--stream", action="store_true",
