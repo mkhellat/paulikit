@@ -74,9 +74,6 @@ First release.
   remain optional accelerators rather than hard requirements.
 - CPU pinning and topology detection are Linux-only, with a documented
   fallback elsewhere; the non-Linux paths are not exercised in CI.
-- A parallel-efficiency step at the 14-to-15 qubit boundary was
-  measured under the process-pool drain and remains unexplained; it
-  has not been re-characterised since the threaded drain landed.
 
 [Unreleased]: https://codeberg.org/beavernets/paulikit/compare/v0.1.0...HEAD
 [0.1.0]: https://codeberg.org/beavernets/paulikit/releases/tag/v0.1.0

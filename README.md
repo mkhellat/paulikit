@@ -175,7 +175,7 @@ src/paulikit/
     pauli_utils.py      Pauli-matrix helpers (label <-> matrix)
     algorithms/fwht.py  The decomposition algorithm
     testing/fixtures.py Known-good operators and expected outputs
-    _native/            Optional compiled kernel, pure-Python fallback
+    _native/            Optional compiled kernels, pure-Python fallback
     cli.py              Command-line interface
 tests/                  Test suite (pytest)
 verification/           Exhaustive correctness runs and their artifacts
@@ -272,9 +272,6 @@ Known gaps:
   install from source as above.
 - CPU pinning and topology detection are Linux-only, with a documented
   fallback elsewhere; the non-Linux paths are not yet exercised in CI.
-- A parallel-efficiency step at the 14-to-15 qubit boundary was
-  measured under the process-pool drain and remains unexplained; it
-  has not been re-characterised since the threaded drain landed.
 
 
 ## License
