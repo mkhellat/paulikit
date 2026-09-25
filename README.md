@@ -65,7 +65,8 @@ Requires Python >= 3.10; the only runtime dependency is NumPy.
 
 ## Installation
 
-Not yet published to PyPI. Install from source:
+Install from a source checkout (this is the supported path for anyone
+cloning the repository):
 
 ```bash
 ./configure && make          # creates a venv, generates a Makefile
@@ -79,14 +80,62 @@ Cython/C++ kernel; if the toolchain is unavailable it falls back to
 pure Python automatically, with a warning the first time that path
 runs.
 
-See [`docs/installation.md`](docs/installation.md) for the full
-reference, including editable-install sequencing and how to force the
-native extension on or off.
+Equivalent manual sequence (same result as `make`):
+
+```bash
+python3 -m venv ~/.venvs/paulikit
+source ~/.venvs/paulikit/bin/activate
+pip install numpy meson-python cython ninja
+pip install -e ".[dev]" --no-build-isolation
+```
+
+See [`docs/installation.md`](docs/installation.md) for editable-install
+sequencing and how to force the native extension on or off.
 
 
 ## Usage
 
-### Command line
+### Fastest paths (start here for real work)
+
+Two recipes cover the measured high-performance configurations.
+Both require the compiled kernels for best results (`./configure &&
+make` with a C toolchain). Prefer `executor="thread"` (or CLI
+`--executor thread` / `auto`) when those kernels are present.
+
+**Sparse / large-N (CLI) — threaded drain, chunk size 2.** This is the
+path that scales: labels are not built; peak RSS stays tens of MiB at
+sizes a dense matrix cannot hold.
+
+```bash
+paulikit decompose --n-oscillators 150 --chunk-size 2 --parallel \
+    --executor thread
+# optional: --n-workers N   # default = physical cores
+```
+
+**Dense fast path (library) — skip the sparsity scan.** Use when the
+operator is a full dense `ndarray` (e.g. random Hermitian). The CLI
+does not yet expose `assume_dense`; call the array API directly:
+
+```python
+from paulikit.algorithms.fwht import parallel_decompose_arrays
+
+# H: dense complex128 array, shape (2**n, 2**n)
+for x, z, coeff in parallel_decompose_arrays(
+    H,
+    chunk_size=2,
+    assume_dense=True,
+    n_workers=1,           # or physical-core count for multi-core
+    executor="thread",
+):
+    ...
+```
+
+Publication measurements use dense qubits=13 and sparse N=300 with
+these same knobs (`chunk_size=2`, `assume_dense=True` on dense,
+`executor="thread"` / `auto` when kernels are present). See the
+companion measurements deposit for the protocol and frozen numbers.
+
+### Command line (small examples)
 
 Once installed, the `paulikit` console script is available:
 
@@ -99,7 +148,7 @@ paulikit regenerate-fixtures
 
 Run `paulikit <subcommand> --help` for full details on each.
 
-### As a library
+### As a library (small example)
 
 ```python
 from paulikit.hamiltonian import build_hamiltonian, pad_to_power_of_two
@@ -113,6 +162,9 @@ H_padded, n_qubits = pad_to_power_of_two(H)
 
 terms = fwht_pauli_terms(H_padded)  # {"IXI": -0.556..., "XII": -0.354..., ...}
 ```
+
+For large operators prefer `parallel_decompose_arrays` (see **Fastest
+paths** above) over collecting a full label dict.
 
 
 ## Package layout
@@ -176,11 +228,6 @@ whole-package correctness evidence is under **Correctness** below):
   Hamiltonians at $N=2$, $N=4$): exact label-set and coefficient
   match.
 
-Planned: Tensorized Pauli Decomposition (TPD), PHASE,
-and C-ported variants of whichever algorithm profiling identifies as
-worth porting — this is why `algorithms/` is a subpackage rather than
-a single module.
-
 
 ## Correctness
 
@@ -200,12 +247,11 @@ a single module.
 - **Regression suite.** 234 tests, including crash-recovery and
   checkpoint-format cases.
 
-No performance comparison is published here. Benchmark tables in a
-README go stale as either implementation changes, and any figure worth
-citing has to be replicated, interleaved, thermally controlled and
-tested for significance — which a hand-maintained table cannot
-guarantee over time. Measured figures, the protocol behind them, and
-the raw data are not published in this repository.
+No performance comparison table is maintained in this README —
+hand-maintained numbers go stale. Measured figures, the protocol, and
+raw JSON live in the companion **paulikit measurements** Zenodo
+deposit (Linux/`perf` reproducibility package), not in this library
+repository.
 
 
 ## Status
@@ -222,7 +268,8 @@ auto-tuning, binary checkpoint/restart, and exhaustive verification to
 Known gaps:
 
 - Prebuilt wheels are not yet published, so the native extension
-  remains an optional accelerator rather than a hard requirement.
+  remains an optional accelerator rather than a hard requirement —
+  install from source as above.
 - CPU pinning and topology detection are Linux-only, with a documented
   fallback elsewhere; the non-Linux paths are not yet exercised in CI.
 - A parallel-efficiency step at the 14-to-15 qubit boundary was
@@ -232,4 +279,4 @@ Known gaps:
 
 ## License
 
-GPL-3.0-or-later. See [`LICENSE`](https://codeberg.org/beavernets/paulikit/src/branch/main/LICENSE).
+GPL-3.0-or-later. See [`LICENSE`](LICENSE).
