@@ -139,15 +139,21 @@ archs = ["auto64"]
 test-requires = ["pytest>=7", "scipy>=1.10"]
 test-command = "pytest {package}/tests -m 'not slow'"
 
+# Do not build pauli_label_native in the wheel. It needs oneTBB, and
+# manylinux images either lack it or ship a layout that fails mid-
+# compile (first CI run: missing oneapi/tbb/parallel_for.h). The
+# transform path does not depend on that kernel; label generation
+# falls back to pure Python. Force -Dnative=disabled so a partial
+# TBB install cannot produce a broken wheel build.
+config-settings = "setup-args=-Dnative=disabled"
+
 # Gate the wheel on the extensions that carry the performance, not on
 # the one that needs oneTBB.
 #
 # wht_kernel modules (wht_native, coeffs_native, gather_native,
 # hermitian_check_native) and cache_probe need only a C compiler and
 # Cython, both present in every manylinux image. pauli_label_native
-# additionally needs C++ and oneTBB, which may be absent, so it may
-# legitimately be missing from a published wheel while the package
-# still works: label generation falls back to pure Python.
+# is explicitly disabled above.
 #
 # The transform and coefficient kernels are different. Without them
 # the package silently takes the NumPy path, which is several times
@@ -156,7 +162,4 @@ test-command = "pytest {package}/tests -m 'not slow'"
 before-test = "python -c \"from paulikit._native import wht_native, coeffs_native, gather_native\""
 
 [tool.cibuildwheel.linux]
-# oneTBB is not in the manylinux base image. Installing it lets
-# pauli_label_native build too; if the install fails the build still
-# succeeds without it, which is the intended optional behaviour.
-before-all = "dnf install -y tbb-devel || yum install -y tbb-devel || true"
+# No before-all TBB install: native/pauli_label is disabled for wheels.
