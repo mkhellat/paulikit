@@ -23,12 +23,20 @@ from paulikit.testing.fixtures import ALL_FIXTURES
 def _reset_autotune_caches():
     """autotune's memory/chunk_size results are cached per-process
     (module-level) - reset before and after each test so tests don't
-    leak state into each other via the cache."""
+    leak state into each other via the cache. Also reset the
+    once-per-process "no cache_probe" warning latch so tests that
+    intentionally clear ``_cache_probe`` still get a predictable
+    ``UserWarning`` (and can assert it with ``pytest.warns``)."""
     autotune._cached_l2_bytes = autotune._L2_BYTES_UNSET
     autotune._cached_memory_budget_bytes = None
+    autotune._WARNED_NO_CACHE_PROBE = False
     yield
     autotune._cached_l2_bytes = autotune._L2_BYTES_UNSET
     autotune._cached_memory_budget_bytes = None
+    autotune._WARNED_NO_CACHE_PROBE = False
+
+
+_NO_PROBE_WARNING = "compiled cache-latency probe is not available"
 
 
 def test_available_memory_bytes_uses_meminfo_when_present(monkeypatch):
@@ -78,14 +86,19 @@ def test_recommended_chunk_size_uses_declared_size_when_no_probe(monkeypatch):
     monkeypatch.setattr(autotune, "_cache_probe", None)
     monkeypatch.setattr(autotune, "_declared_l2_size_bytes", lambda: 256 * 1024)
     # dim=1024 -> 1024*16 = 16384 bytes/row; 262144 // 16384 = 16
-    assert autotune.recommended_chunk_size(dim=1024) == 16
+    with pytest.warns(UserWarning, match=_NO_PROBE_WARNING):
+        assert autotune.recommended_chunk_size(dim=1024) == 16
 
 
 def test_recommended_chunk_size_respects_floor(monkeypatch):
     monkeypatch.setattr(autotune, "_cache_probe", None)
     monkeypatch.setattr(autotune, "_declared_l2_size_bytes", lambda: 1024)  # tiny
     # dim large enough that the cache-driven size would be < floor
-    assert autotune.recommended_chunk_size(dim=4096) == autotune._min_chunk_size_floor(4096)
+    with pytest.warns(UserWarning, match=_NO_PROBE_WARNING):
+        assert (
+            autotune.recommended_chunk_size(dim=4096)
+            == autotune._min_chunk_size_floor(4096)
+        )
 
 
 def test_l2_bytes_rejects_probe_result_wildly_disagreeing_with_declared_size(monkeypatch):
@@ -205,7 +218,8 @@ def test_min_chunk_size_floor_interpolates_monotonically_in_the_unmeasured_gap()
 def test_recommended_chunk_size_falls_back_to_32_when_nothing_works(monkeypatch):
     monkeypatch.setattr(autotune, "_cache_probe", None)
     monkeypatch.setattr(autotune, "_declared_l2_size_bytes", lambda: None)
-    assert autotune.recommended_chunk_size(dim=64) == 32
+    with pytest.warns(UserWarning, match=_NO_PROBE_WARNING):
+        assert autotune.recommended_chunk_size(dim=64) == 32
 
 
 def test_recommended_chunk_size_is_cached_per_process(monkeypatch):
@@ -218,7 +232,8 @@ def test_recommended_chunk_size_is_cached_per_process(monkeypatch):
     monkeypatch.setattr(autotune, "_cache_probe", None)
     monkeypatch.setattr(autotune, "_declared_l2_size_bytes", fake_declared)
 
-    first = autotune.recommended_chunk_size(dim=64)
+    with pytest.warns(UserWarning, match=_NO_PROBE_WARNING):
+        first = autotune.recommended_chunk_size(dim=64)
     second = autotune.recommended_chunk_size(dim=64)
     assert first == second
     assert len(calls) == 1, (
@@ -238,7 +253,8 @@ def test_recommended_chunk_size_recomputes_per_dim_despite_l2_cache(monkeypatch)
     monkeypatch.setattr(autotune, "_cache_probe", None)
     monkeypatch.setattr(autotune, "_declared_l2_size_bytes", lambda: 256 * 1024)
 
-    small_dim_result = autotune.recommended_chunk_size(dim=512)
+    with pytest.warns(UserWarning, match=_NO_PROBE_WARNING):
+        small_dim_result = autotune.recommended_chunk_size(dim=512)
     large_dim_result = autotune.recommended_chunk_size(dim=16384)
     assert small_dim_result != large_dim_result, (
         "different dims must not silently share a cached chunk_size"
@@ -359,10 +375,11 @@ def test_recommended_chunk_size_thread_safe_single_underlying_call(monkeypatch):
         results.append(autotune.recommended_chunk_size(dim=1024))
 
     threads = [threading.Thread(target=worker) for _ in range(8)]
-    for t in threads:
-        t.start()
-    for t in threads:
-        t.join()
+    with pytest.warns(UserWarning, match=_NO_PROBE_WARNING):
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
 
     assert call_count == 1, (
         f"expected the underlying detection to run exactly once across "

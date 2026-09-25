@@ -8,6 +8,11 @@ GIL, so per-chunk work runs genuinely concurrently and no arrays cross
 a process boundary. What must be guaranteed is that changing the drain
 changes *nothing* observable: same terms, same contract, same
 checkpoint format.
+
+Several tests also call ``executor="process"`` to cross-check drains.
+Those forks can trip CPython 3.12+'s multi-threaded-fork
+``DeprecationWarning`` under pytest (OpenBLAS / prior thread pools);
+that warning is filtered in ``pyproject.toml``, not ignored ad hoc here.
 """
 
 import numpy as np

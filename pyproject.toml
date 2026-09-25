@@ -102,6 +102,17 @@ markers = [
     "slow: benchmark and reference comparisons that take minutes to run; excluded by default via addopts below, run them with -m slow",
 ]
 addopts = "-m 'not slow'"
+# CPython 3.12+ warns when os.fork() runs in a multi-threaded process.
+# Under pytest that is routine here: NumPy/OpenBLAS (and earlier
+# ThreadPoolExecutor drain tests) leave worker threads alive, then
+# executor="process" uses ProcessPoolExecutor's default Linux start
+# method (fork) for the pinned-worker path. The warning is upstream
+# noise, not a paulikit correctness failure; forkserver was tried and
+# hit handshake failures with this initializer/pickling shape. Silence
+# only that specific DeprecationWarning.
+filterwarnings = [
+    "ignore:This process \\(pid=.*\\) is multi-threaded, use of fork\\(\\) may lead to deadlocks in the child:DeprecationWarning",
+]
 
 [tool.ruff]
 line-length = 92
