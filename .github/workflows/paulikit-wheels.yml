@@ -1,0 +1,79 @@
+# Build manylinux wheels for paulikit (sdist is a separate job in this
+# workflow). Config lives in pyproject.toml under [tool.cibuildwheel]:
+# Linux x86_64 + aarch64, CPython 3.10-3.13, musllinux/Windows/macOS
+# skipped by design.
+#
+# Manual or tag-triggered only — not on every push. Kernel import
+# gates (wht_native / coeffs_native) run inside cibuildwheel's
+# before-test so a wheel without the transform path fails the job.
+
+name: paulikit wheels
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch: {}
+
+jobs:
+  build_wheels:
+    name: Wheels on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+          - ubuntu-24.04-arm
+
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Build wheels
+        uses: pypa/cibuildwheel@v4.2.1
+        with:
+          package-dir: .
+          output-dir: wheelhouse
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: paulikit-wheels-${{ matrix.os }}-${{ strategy.job-index }}
+          path: ./wheelhouse/*.whl
+
+  build_sdist:
+    name: Source distribution
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Build sdist
+        run: |
+          python -m pip install --upgrade build
+          python -m build --sdist --outdir dist
+
+      - name: Sanity-check sdist contents
+        run: |
+          python - <<'PY'
+          import tarfile
+          from pathlib import Path
+          sdists = list(Path("dist").glob("*.tar.gz"))
+          assert len(sdists) == 1, sdists
+          names = tarfile.open(sdists[0]).getnames()
+          banned = ("plans/", "profiling/", ".worktrees/", "PYPI_RELEASE")
+          hits = [n for n in names if any(b in n for b in banned)]
+          assert not hits, f"sdist carries private/research paths: {hits[:20]}"
+          print(f"ok: {sdists[0].name} ({len(names)} entries)")
+          PY
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: paulikit-sdist
+          path: dist/*.tar.gz
