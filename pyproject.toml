@@ -90,7 +90,7 @@ docs = [
 [project.urls]
 Homepage = "https://codeberg.org/beavernets/paulikit"
 Repository = "https://codeberg.org/beavernets/paulikit"
-Documentation = "https://codeberg.org/beavernets/paulikit/src/branch/main/docs"
+Documentation = "https://codeberg.org/beavernets/paulikit/src/branch/main/docs/index.md"
 "Issue tracker" = "https://codeberg.org/beavernets/paulikit/issues"
 
 [project.scripts]
