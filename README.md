@@ -65,8 +65,20 @@ Requires Python >= 3.10; the only runtime dependency is NumPy.
 
 ## Installation
 
-Install from a source checkout (this is the supported path until
-prebuilt wheels are on PyPI):
+**From PyPI** (Linux manylinux wheels for CPython 3.10–3.13, x86_64 and
+aarch64; other platforms get the sdist and build or use pure Python):
+
+```bash
+pip install paulikit
+```
+
+The Linux wheels ship the `wht_kernel` set (Walsh–Hadamard, coefficients,
+gather, Hermiticity check, plus optional x86-64-v3 twins) and
+`cache_probe`. They do **not** include `pauli_label_native` (needs
+oneTBB); label-returning APIs fall back to pure Python with a one-time
+warning. macOS, Windows, and musllinux are not wheel targets.
+
+**From a source checkout** (development):
 
 ```bash
 ./configure && make          # creates a venv, generates a Makefile
@@ -75,8 +87,8 @@ make check                   # run the test suite
 
 `./configure` prints a capability report (compiler, Cython, oneTBB,
 cache hierarchy, NumPy's BLAS backend) and generates a Makefile with
-the standard GNU targets. The build optionally compiles a native
-Cython/C++ set of kernels; if the toolchain is unavailable it falls
+the standard GNU targets. The build optionally compiles native
+Cython/C(/C++) kernels; if the toolchain is unavailable it falls
 back to pure Python automatically, with a warning the first time that
 path runs.
 
@@ -102,8 +114,9 @@ manylinux wheel workflow.
 ### Fastest paths (start here for real work)
 
 Two recipes cover the measured high-performance configurations.
-Both require the compiled kernels for best results (`./configure &&
-make` with a C toolchain). Prefer `executor="thread"` (or CLI
+Both require the compiled `wht_kernel` modules for best results
+(`pip install paulikit` on Linux, or `./configure && make` from a
+checkout with a C toolchain). Prefer `executor="thread"` (or CLI
 `--executor thread` / `auto`) when those kernels are present.
 
 **Sparse / large-N (CLI) — threaded drain, chunk size 2.** This is the
@@ -276,14 +289,13 @@ auto-tuning, binary checkpoint/restart, and exhaustive verification to
 
 Known gaps:
 
-- Prebuilt wheels are not yet on PyPI, so the compiled extensions
-  remain optional accelerators rather than a hard requirement —
-  install from source as above. Manylinux wheels (and the sdist) are
-  built by `.github/workflows/paulikit-wheels.yml` on the GitHub
-  mirror
-  ([github.com/beavernets-inc/paulikit](https://github.com/beavernets-inc/paulikit);
-  `v*` tag or manual dispatch); publishing them is the next release
-  step. Codeberg is the canonical tree.
+- Published Linux manylinux wheels (x86_64 / aarch64, CPython 3.10–3.13)
+  ship the `wht_kernel` set (+ `cache_probe`); `pauli_label_native` is
+  not in the wheel (oneTBB). macOS, Windows, and musllinux are not
+  wheel targets — use the sdist / from-source build there. Wheel CI
+  runs on the GitHub mirror
+  ([github.com/beavernets-inc/paulikit](https://github.com/beavernets-inc/paulikit));
+  Codeberg is the canonical tree.
 - CPU pinning and topology detection are Linux-only, with a documented
   fallback elsewhere; the non-Linux paths are not yet exercised in CI.
 
