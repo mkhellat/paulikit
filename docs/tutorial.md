@@ -8,8 +8,13 @@ signatures, see the {doc}`API reference <api/index>`.
 
 ## Installation
 
-From a source checkout (the supported path today — prebuilt wheels
-are not yet published):
+```bash
+pip install paulikit
+```
+
+On Linux that installs a manylinux wheel with the `wht_kernel` modules
+(and `cache_probe`). From a source checkout (development, or platforms
+without a wheel):
 
 ```bash
 ./configure && make
@@ -30,8 +35,9 @@ install above sets up automatically.
 The build optionally compiles several Cython kernels (Walsh–Hadamard
 butterfly, coefficients, gather, Hermiticity check, Pauli labels,
 cache probe) when a C/C++ toolchain is available — falling back to
-pure Python / NumPy automatically otherwise. See {doc}`installation`
-for the meson options; nothing in the small examples below depends on
+pure Python / NumPy automatically otherwise. Published Linux wheels
+already include the transform kernels; see {doc}`installation` for
+meson options. Nothing in the small examples below depends on
 which path is active, but the large-scale recipes in
 [Fastest paths](#fastest-paths) do.
 

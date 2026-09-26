@@ -5,6 +5,20 @@ Installation section is enough; this document covers the build
 system's requirements, the editable-install sequencing, and the
 optional native extensions in detail.
 
+## From PyPI
+
+```bash
+pip install paulikit
+```
+
+Linux manylinux wheels (CPython 3.10–3.13, x86_64 and aarch64) ship
+`wht_kernel` and `cache_probe` with `-Dnative=disabled` (no
+`pauli_label_native` / oneTBB). Other platforms install from the sdist
+and compile what the local toolchain allows, or fall back to pure
+Python.
+
+## From a source checkout
+
 paulikit is built with [meson-python](https://mesonbuild.com/meson-python/)
 (the same build backend NumPy and SciPy use), and optionally compiles
 several Cython/C(/C++) kernels that accelerate the transform, gather,
@@ -118,12 +132,13 @@ pip install -e . --no-build-isolation \
   --config-settings=setup-args="-Dcache_probe=disabled"
 ```
 
-The compiled extensions are currently optional accelerators, not a
-hard requirement — prebuilt wheels are not yet on PyPI, so requiring
-a C toolchain for every `pip install` would be too heavy a default.
-CI builds manylinux wheels on tag / manual dispatch via
+On a from-source install the compiled extensions remain optional
+accelerators: requiring a C toolchain for every `pip install` of the
+sdist would be too heavy a default. Published Linux wheels already
+include the transform kernels (`wht_kernel` + `cache_probe`). Wheel CI
+runs on tag / manual dispatch via
 `.github/workflows/paulikit-wheels.yml` on the GitHub mirror
 ([github.com/beavernets-inc/paulikit](https://github.com/beavernets-inc/paulikit));
-Codeberg remains the canonical tree. Once those wheels are published
-to PyPI, the kernels can become a hard requirement matching the
-NumPy/SciPy model.
+Codeberg remains the canonical tree. Making every kernel a hard
+requirement (NumPy/SciPy model), including `pauli_label_native`, is a
+later packaging step once oneTBB is handled for manylinux.
