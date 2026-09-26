@@ -64,8 +64,9 @@ exists to serve, so it needs to stay green there.
 
 ## Wheels and releases
 
-Until wheels are published on PyPI, install from a source checkout as
-in the README.
+```bash
+pip install paulikit
+```
 
 Manylinux wheels (x86_64 and aarch64, CPython 3.10–3.13) and the sdist
 are built by `.github/workflows/paulikit-wheels.yml` on the GitHub
@@ -75,6 +76,7 @@ push a `v*` tag, or run the workflow manually. The job fails
 if `wht_native` / `coeffs_native` / `gather_native` are missing from
 the wheel. musllinux, macOS, and Windows are intentionally not wheel
 targets; those platforms use the sdist and documented fallbacks.
+Wheels omit `pauli_label_native` (oneTBB).
 
 Codeberg remains the source of truth for the tree. Do not expect the
 same cibuildwheel matrix to run on Codeberg's hosted Actions without

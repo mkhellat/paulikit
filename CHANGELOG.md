@@ -9,12 +9,6 @@ versions; see the README's Status section.
 
 ## [Unreleased]
 
-### Changed
-
-- GitHub mirror URL retargeted to
-  [github.com/beavernets-inc/paulikit](https://github.com/beavernets-inc/paulikit)
-  (org transfer from `mkhellat/paulikit`).
-
 ## [0.1.0] - 2026-09-26
 
 First public release (PyPI target). Package contents were prepared
@@ -97,6 +91,10 @@ uploaded artifacts.
   Sphinx tutorial, installation, and native docs match the multi-kernel
   surface; `--chunk-size` help no longer claims auto-tuning is absent
   from the library APIs.
+- GitHub mirror moved to
+  [beavernets-inc/paulikit](https://github.com/beavernets-inc/paulikit);
+  install docs lead with `pip install paulikit` for the first PyPI
+  upload.
 
 ### Fixed
 
@@ -110,9 +108,9 @@ uploaded artifacts.
 
 ### Known limitations
 
-- Until this version is uploaded to PyPI, install from a source
-  checkout or from CI wheel artifacts. Manylinux wheels omit
-  `pauli_label_native` (oneTBB); other kernels are gated in CI.
+- Linux manylinux wheels ship `wht_kernel` (+ `cache_probe`) but omit
+  `pauli_label_native` (oneTBB). macOS / Windows / musllinux use the
+  sdist. Install with `pip install paulikit`.
 - CPU pinning and topology detection are Linux-only, with a documented
   fallback elsewhere; the non-Linux paths are not exercised in CI.
 
