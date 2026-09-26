@@ -8,8 +8,13 @@
 # hosted Forgejo Actions runners are not used for this matrix (need
 # Docker-capable manylinux builds). Manual or tag-triggered only —
 # not on every push. Kernel import gates (wht_native / coeffs_native /
-# gather_native) run inside cibuildwheel's before-test so a wheel
+# gather_native) run inside cibuildwheel's test-command so a wheel
 # without the transform path fails the job.
+#
+# Publish (Trusted Publishing): configure pending publishers on
+# TestPyPI and PyPI for owner mkhellat, repo paulikit, workflow
+# paulikit-wheels.yml, environments testpypi / pypi. No API tokens
+# in the repository.
 
 name: paulikit wheels
 
@@ -17,7 +22,16 @@ on:
   push:
     tags:
       - "v*"
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: "Upload built artifacts"
+        type: choice
+        options:
+          - none
+          - testpypi
+          - pypi
+        default: none
 
 jobs:
   build_wheels:
@@ -81,3 +95,41 @@ jobs:
         with:
           name: paulikit-sdist
           path: dist/*.tar.gz
+
+  publish:
+    name: Publish package
+    needs: [build_wheels, build_sdist]
+    if: >
+      (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v'))
+      || (github.event_name == 'workflow_dispatch'
+          && inputs.publish != 'none')
+    runs-on: ubuntu-latest
+    environment:
+      name: ${{ (github.event_name == 'workflow_dispatch' && inputs.publish == 'testpypi') && 'testpypi' || 'pypi' }}
+      url: ${{ (github.event_name == 'workflow_dispatch' && inputs.publish == 'testpypi') && 'https://test.pypi.org/project/paulikit/' || 'https://pypi.org/project/paulikit/' }}
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: paulikit-*
+          merge-multiple: true
+          path: dist
+
+      - name: Show artifacts
+        run: ls -la dist
+
+      - name: Publish to TestPyPI
+        if: github.event_name == 'workflow_dispatch' && inputs.publish == 'testpypi'
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          repository-url: https://test.pypi.org/legacy/
+          packages-dir: dist
+
+      - name: Publish to PyPI
+        if: >
+          (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v'))
+          || (github.event_name == 'workflow_dispatch' && inputs.publish == 'pypi')
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist
