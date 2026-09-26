@@ -140,20 +140,19 @@ test-requires = ["pytest>=7", "scipy>=1.10"]
 # Import gate lives in test-command (not before-test): cibuildwheel v4
 # creates the test venv and runs before-test *before* installing the
 # repaired wheel, so "import paulikit" there fails with ModuleNotFound.
-test-command = "python -c \"from paulikit._native import wht_native, coeffs_native, gather_native\" && pytest {package}/tests -m 'not slow'"
+test-command = "python -c \"from paulikit._native import wht_native, coeffs_native, gather_native, pauli_label_native\" && pytest {package}/tests -m 'not slow'"
 
-# Do not build pauli_label_native in the wheel. It needs oneTBB, and
-# manylinux images either lack it or ship a layout that fails mid-
-# compile (first CI run: missing oneapi/tbb/parallel_for.h). The
-# transform path does not depend on that kernel; label generation
-# falls back to pure Python. Force -Dnative=disabled so a partial
-# TBB install cannot produce a broken wheel build.
-config-settings = "setup-args=-Dnative=disabled"
+# Serial pauli_label_native needs only C + Cython (same as wht_kernel).
+# Do not force -Dnative=disabled: wheels should ship the serial label
+# kernel. The optional oneTBB parallel module is simply absent on
+# manylinux when tbb-devel is not installed — that is intentional;
+# parallel_labels falls back to serial with identical results.
 
 # wht_kernel modules (wht_native, coeffs_native, gather_native,
-# hermitian_check_native) and cache_probe need only a C compiler and
-# Cython. The import line in test-command above fails the job if those
-# are missing from the installed wheel.
+# hermitian_check_native), cache_probe, and serial pauli_label_native
+# need only a C compiler and Cython. The import line in test-command
+# fails the job if those are missing from the installed wheel.
 
 [tool.cibuildwheel.linux]
-# No before-all TBB install: native/pauli_label is disabled for wheels.
+# No before-all TBB install: wheels ship serial pauli_label only.
+# oneTBB parallel fill remains a from-source optional module.
