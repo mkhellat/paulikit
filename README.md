@@ -73,10 +73,12 @@ pip install paulikit
 ```
 
 The Linux wheels ship the `wht_kernel` set (Walsh–Hadamard, coefficients,
-gather, Hermiticity check, plus optional x86-64-v3 twins) and
-`cache_probe`. They do **not** include `pauli_label_native` (needs
-oneTBB); label-returning APIs fall back to pure Python with a one-time
-warning. macOS, Windows, and musllinux are not wheel targets.
+gather, Hermiticity check, plus optional x86-64-v3 twins),
+`cache_probe`, and the **serial** `pauli_label_native` kernel (C +
+Cython; no oneTBB). The optional oneTBB parallel label fill is
+from-source only — e2e `list[str]` labeling is dominated by Python
+string construction, so wheels do not vendor TBB for it. macOS,
+Windows, and musllinux are not wheel targets.
 
 **From a source checkout** (development):
 
@@ -290,10 +292,10 @@ auto-tuning, binary checkpoint/restart, and exhaustive verification to
 Known gaps:
 
 - Published Linux manylinux wheels (x86_64 / aarch64, CPython 3.10–3.13)
-  ship the `wht_kernel` set (+ `cache_probe`); `pauli_label_native` is
-  not in the wheel (oneTBB). macOS, Windows, and musllinux are not
-  wheel targets — use the sdist / from-source build there. Wheel CI
-  runs on the GitHub mirror
+  ship `wht_kernel`, `cache_probe`, and serial `pauli_label_native`.
+  The optional oneTBB parallel label module is not in the wheel.
+  macOS, Windows, and musllinux are not wheel targets — use the sdist
+  / from-source build there. Wheel CI runs on the GitHub mirror
   ([github.com/beavernets-inc/paulikit](https://github.com/beavernets-inc/paulikit));
   Codeberg is the canonical tree.
 - CPU pinning and topology detection are Linux-only, with a documented

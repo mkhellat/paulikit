@@ -73,10 +73,11 @@ are built by `.github/workflows/paulikit-wheels.yml` on the GitHub
 mirror
 ([github.com/beavernets-inc/paulikit](https://github.com/beavernets-inc/paulikit)):
 push a `v*` tag, or run the workflow manually. The job fails
-if `wht_native` / `coeffs_native` / `gather_native` are missing from
-the wheel. musllinux, macOS, and Windows are intentionally not wheel
-targets; those platforms use the sdist and documented fallbacks.
-Wheels omit `pauli_label_native` (oneTBB).
+if `wht_native` / `coeffs_native` / `gather_native` /
+`pauli_label_native` are missing from the wheel. musllinux, macOS, and
+Windows are intentionally not wheel targets; those platforms use the
+sdist and documented fallbacks. Wheels ship serial `pauli_label_native`
+only (no oneTBB parallel fill).
 
 Codeberg remains the source of truth for the tree. Do not expect the
 same cibuildwheel matrix to run on Codeberg's hosted Actions without

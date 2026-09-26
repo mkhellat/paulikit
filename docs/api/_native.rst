@@ -14,7 +14,8 @@ otherwise. Three meson feature options gate them:
 * ``wht_kernel`` — ``wht_native`` (and optional ``wht_native_v3``),
   ``coeffs_native`` (and optional ``coeffs_native_v3``),
   ``gather_native``, ``hermitian_check_native``
-* ``native`` — ``pauli_label_native`` (needs C++ and oneTBB)
+* ``native`` — serial ``pauli_label_native`` (C + Cython); optional
+  ``pauli_label_parallel_native`` (C++ + oneTBB)
 * ``cache_probe`` — ``cache_probe``
 
 See :doc:`../installation` for build details and the rationale behind

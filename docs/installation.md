@@ -12,10 +12,10 @@ pip install paulikit
 ```
 
 Linux manylinux wheels (CPython 3.10–3.13, x86_64 and aarch64) ship
-`wht_kernel` and `cache_probe` with `-Dnative=disabled` (no
-`pauli_label_native` / oneTBB). Other platforms install from the sdist
-and compile what the local toolchain allows, or fall back to pure
-Python.
+`wht_kernel`, `cache_probe`, and serial `pauli_label_native` (C +
+Cython). The optional oneTBB parallel label module is omitted from
+wheels on purpose. Other platforms install from the sdist and compile
+what the local toolchain allows, or fall back to pure Python.
 
 ## From a source checkout
 
@@ -100,13 +100,16 @@ fallback path first runs):
 | meson option | Modules | Needs |
 |---|---|---|
 | `wht_kernel` | `wht_native` (+ optional `wht_native_v3`), `coeffs_native` (+ optional `coeffs_native_v3`), `gather_native`, `hermitian_check_native` | C compiler + Cython ≥ 3.0 |
-| `native` | `pauli_label_native` | C++ + Cython ≥ 3.0 + [oneTBB](https://github.com/oneapi-src/oneTBB) |
+| `native` | `pauli_label_native` (serial); optional `pauli_label_parallel_native` | Serial: C + Cython ≥ 3.0. Parallel fill: C++ + [oneTBB](https://github.com/oneapi-src/oneTBB) |
 | `cache_probe` | `cache_probe` | C compiler + Cython ≥ 3.0 |
 
 The `wht_kernel` set carries the transform, gather, coefficient
 emission, and Hermiticity check — these are the modules that matter
-for throughput and for the threaded drain. `pauli_label_native` only
-accelerates label-string generation (the dict-returning APIs).
+for throughput and for the threaded drain. Serial `pauli_label_native`
+accelerates label-string generation for the dict-returning APIs and
+ships in the Linux wheels. The optional `pauli_label_parallel_native`
+module needs oneTBB and is from-source only (`parallel_labels=True`);
+e2e it barely helps because Python `str` construction dominates.
 `cache_probe` feeds `paulikit.algorithms.autotune`'s chunk sizing.
 
 The optional `_v3` twins of the WHT and coefficient kernels are the
@@ -135,10 +138,10 @@ pip install -e . --no-build-isolation \
 On a from-source install the compiled extensions remain optional
 accelerators: requiring a C toolchain for every `pip install` of the
 sdist would be too heavy a default. Published Linux wheels already
-include the transform kernels (`wht_kernel` + `cache_probe`). Wheel CI
-runs on tag / manual dispatch via
+include `wht_kernel`, `cache_probe`, and serial `pauli_label_native`.
+Wheel CI runs on tag / manual dispatch via
 `.github/workflows/paulikit-wheels.yml` on the GitHub mirror
 ([github.com/beavernets-inc/paulikit](https://github.com/beavernets-inc/paulikit));
 Codeberg remains the canonical tree. Making every kernel a hard
-requirement (NumPy/SciPy model), including `pauli_label_native`, is a
-later packaging step once oneTBB is handled for manylinux.
+sdist requirement (NumPy/SciPy model) is still a later packaging step;
+oneTBB is not part of that gate for serial labels.

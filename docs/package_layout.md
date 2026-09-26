@@ -33,7 +33,9 @@ src/paulikit/
                               `wht_native_v3`, `coeffs_native` /
                               `coeffs_native_v3`, `gather_native`,
                               `hermitian_check_native`
-                            - `native`: `pauli_label_native`
+                            - `native`: serial `pauli_label_native`
+                              (Cython/C); optional
+                              `pauli_label_parallel_native`
                               (Cython/C++ + oneTBB)
                             - `cache_probe`: `cache_probe`
     cli.py                  Command-line interface wiring the above
