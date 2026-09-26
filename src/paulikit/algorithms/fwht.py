@@ -87,6 +87,11 @@ try:
 except ImportError:
     _native = None
 
+try:
+    from paulikit._native import pauli_label_parallel_native as _native_parallel
+except ImportError:
+    _native_parallel = None
+
 def _cpu_has_x86_64_v3() -> bool:
     """Best-effort check for the x86-64-v3 feature set (AVX2, BMI2,
     FMA, POPCNT - what ``-march=x86-64-v3`` requires the CPU to
@@ -3392,37 +3397,37 @@ def _pauli_label_batch(
     process the first time the fallback is actually used.
 
     Args:
-        parallel: If ``True`` and the native extension is available,
-            uses ``pauli_label_batch_parallel`` (oneTBB-parallel)
-            instead of the serial ``pauli_label_batch`` kernel. Real
-            wall-clock win **in isolation** at large batch sizes
-            (~1.1-1.4x measured at 40M terms), but
-            no measurable benefit once embedded in the real streaming
-            pipeline at N=150 - dict construction there dominates at
-            ~60% of total time, dwarfing labeling's ~7% share. Left
-            opt-in rather than the default, since it is not a
-            meaningful lever for real-pipeline performance. Ignored
-            (falls back to serial, or
-            the pure-Python loop) if the native extension is
-            unavailable - the ``parallel`` and native-availability
-            questions are independent.
+        parallel: If ``True`` and ``pauli_label_parallel_native`` is
+            available (oneTBB), uses that module's
+            ``pauli_label_batch_parallel`` instead of the serial C
+            kernel. The C fill alone is ~3-4x faster under TBB at
+            ~1.26M terms, but end-to-end ``list[str]`` construction
+            still spends ~94% of wall time in Python ``str`` decode,
+            so e2e speedup is ~1.03x. Left opt-in. If the parallel
+            module is missing, falls back to serial native (or pure
+            Python) — same labels, no error.
     """
+    x_masks = np.asarray(x_indices, dtype=np.uint32)
+    z_masks = np.asarray(z_indices, dtype=np.uint32)
+
+    if parallel and _native_parallel is not None:
+        return _native_parallel.pauli_label_batch_parallel(
+            x_masks, z_masks, n_qubits
+        )
+
     if _native is not None:
-        x_masks = np.asarray(x_indices, dtype=np.uint32)
-        z_masks = np.asarray(z_indices, dtype=np.uint32)
-        if parallel:
-            return _native.pauli_label_batch_parallel(x_masks, z_masks, n_qubits)
         return _native.pauli_label_batch(x_masks, z_masks, n_qubits)
 
     global _WARNED_NO_NATIVE
     if not _WARNED_NO_NATIVE:
         warnings.warn(
             "paulikit's compiled pauli_label fast path is not available "
-            "(built with -Dnative=disabled, or a C++ compiler/oneTBB were "
+            "(built with -Dnative=disabled, or a C compiler/Cython were "
             "missing at build time) - using the pure-Python pauli_label "
             "loop, which is substantially slower for large term counts. "
-            "Rebuild paulikit with a C++ compiler and oneTBB available "
-            "to get the compiled fast path.",
+            "Rebuild paulikit with a C compiler and Cython >= 3.0 to get "
+            "the compiled serial fast path (oneTBB is only needed for "
+            "the optional parallel_labels fill).",
             stacklevel=3,
         )
         _WARNED_NO_NATIVE = True

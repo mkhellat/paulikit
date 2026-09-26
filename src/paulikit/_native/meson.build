@@ -1,52 +1,70 @@
-# The compiled fast path for paulikit.algorithms.fwht.fwht_pauli_terms.
-# Optional (see meson.options's "native" feature) so paulikit stays
-# pip-installable without a C++ toolchain or oneTBB; fwht.py falls
-# back to pure Python with a visible warning if this module isn't
-# built. The optional/fallback model is a deliberate temporary
-# compromise, not the eventual target: the NumPy/SciPy model, where
-# the extension is always required and shipped as prebuilt wheels, is
-# the goal once wheel-building CI exists.
+# Serial pauli_label fast path (C + Cython). Optional via meson.options
+# "native". Deliberately independent of oneTBB: the serial C kernel is
+# what wheels and most installs need; the TBB parallel fill is a
+# separate optional module below. fwht.py falls back to pure Python
+# with a visible warning if pauli_label_native is absent.
 
 native_opt = get_option('native')
 
-# have_cython / have_cpp come from add_languages() in the top-level
-# meson.build. Guarding on them matters: meson.get_compiler('cython')
-# is a hard error when the language was never successfully added, so
-# calling it unguarded defeats the whole auto-fallback.
-if not native_opt.disabled() and have_cython and have_cpp
+# have_cython / have_c / have_cpp come from add_languages() in the
+# top-level meson.build. Guarding on them matters: meson.get_compiler
+# is a hard error when the language was never successfully added.
+if not native_opt.disabled() and have_cython and have_c
   cy = meson.get_compiler('cython')
-  tbb_dep = dependency('tbb', required: native_opt)
   cython_ok = cy.version().version_compare('>=3.0')
 
-  if tbb_dep.found() and cython_ok
+  if cython_ok
     np_include_path = run_command(
       py, ['-c', 'import numpy; print(numpy.get_include())'],
       check: true,
     ).stdout().strip()
 
+    # Serial module: C only — ships in manylinux wheels.
     py.extension_module(
       'pauli_label_native',
       [
         'pauli_label_native.pyx',
         'pauli_label.c',
-        'pauli_label_parallel.cpp',
       ],
       include_directories: include_directories('.', np_include_path, is_system: true),
-      dependencies: [tbb_dep],
-      override_options: ['cython_language=cpp'],
       install: true,
       subdir: 'paulikit/_native',
     )
+
+    # Optional oneTBB parallel fill. Not required for -Dnative=enabled;
+    # serial alone satisfies the option. Built when C++ and TBB exist.
+    if have_cpp
+      tbb_dep = dependency('tbb', required: false)
+      if tbb_dep.found()
+        py.extension_module(
+          'pauli_label_parallel_native',
+          [
+            'pauli_label_parallel_native.pyx',
+            'pauli_label_parallel.cpp',
+          ],
+          include_directories: include_directories('.', np_include_path, is_system: true),
+          dependencies: [tbb_dep],
+          override_options: ['cython_language=cpp'],
+          install: true,
+          subdir: 'paulikit/_native',
+        )
+      else
+        message('paulikit: pauli_label_parallel_native not built (oneTBB not found)')
+      endif
+    else
+      message('paulikit: pauli_label_parallel_native not built (no C++ compiler)')
+    endif
   elif native_opt.enabled()
     error('native extension explicitly requested (-Dnative=enabled) but ' +
-          'oneTBB (found: @0@) or Cython >= 3.0 (found: @1@) is missing'.format(
-            tbb_dep.found(), cython_ok))
+          'Cython >= 3.0 is missing (found: @0@)'.format(cython_ok))
   else
-    message('paulikit: native extension not built (oneTBB or Cython >= 3.0 ' +
-            'not found) - falling back to pure Python at import time')
+    message('paulikit: pauli_label_native not built (Cython >= 3.0 not found) ' +
+            '- falling back to pure Python at import time')
   endif
-else
+elif native_opt.disabled()
   message('paulikit: native extension disabled via -Dnative=disabled')
+else
+  message('paulikit: pauli_label_native not built (C compiler or Cython unavailable)')
 endif
 
 # The Walsh-Hadamard butterfly kernel - the compiled fast path for

@@ -2,12 +2,14 @@ option(
   'native',
   type: 'feature',
   value: 'auto',
-  description: 'Build the optional compiled pauli_label fast path (Cython + C + oneTBB). ' +
-               '"auto" builds it if Cython and oneTBB are found, otherwise falls ' +
-               'back to pure Python silently at build time; the first call that ' +
-               'would have used the compiled kernel warns once. Pass ' +
-               '-Dnative=disabled to force pure-Python-only, or -Dnative=enabled ' +
-               'to fail the build if it cannot be built.',
+  description: 'Build the optional compiled pauli_label fast path (Cython + C). ' +
+               '"auto" builds the serial kernel if Cython >= 3.0 and a C compiler ' +
+               'are found; also builds the optional oneTBB-parallel module when ' +
+               'C++ and oneTBB are present. Otherwise falls back to pure Python ' +
+               'at runtime with a one-time warning. Pass -Dnative=disabled to ' +
+               'force pure-Python-only, or -Dnative=enabled to fail the build if ' +
+               'the serial kernel cannot be built. oneTBB is never required for ' +
+               '-Dnative=enabled — only for the optional parallel fill.',
 )
 
 option(
@@ -29,8 +31,7 @@ option(
   description: 'Build the optional compiled Walsh-Hadamard butterfly and ' +
                'coefficient kernels (Cython + C). Independent of the "native" ' +
                'option - these need neither C++ nor oneTBB, only a C compiler ' +
-               'and Cython >= 3.0, so they build on machines where ' +
-               'pauli_label_native cannot. They carry the transform and the ' +
+               'and Cython >= 3.0. They carry the transform and the ' +
                'per-term coefficient work, so these are the ones worth having. ' +
                '"auto" builds them if Cython is found, otherwise falls back to ' +
                'the pure-Python path. Pass -Dwht_kernel=disabled to force the ' +
