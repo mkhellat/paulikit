@@ -11,10 +11,10 @@
 # gather_native) run inside cibuildwheel's test-command so a wheel
 # without the transform path fails the job.
 #
-# Publish (Trusted Publishing): configure pending publishers on
-# TestPyPI and PyPI for owner mkhellat, repo paulikit, workflow
-# paulikit-wheels.yml, environments testpypi / pypi. No API tokens
-# in the repository.
+# Publish: prefer Trusted Publishing (OIDC). Optional fallback: set
+# environment secret TEST_PYPI_API_TOKEN or PYPI_API_TOKEN (pypi.org
+# "API token" with upload scope) on the matching GitHub Environment.
+# Do not commit tokens.
 
 name: paulikit wheels
 
@@ -109,6 +109,10 @@ jobs:
       url: ${{ (github.event_name == 'workflow_dispatch' && inputs.publish == 'testpypi') && 'https://test.pypi.org/project/paulikit/' || 'https://pypi.org/project/paulikit/' }}
     permissions:
       id-token: write
+    env:
+      # Resolved when the job starts (safe to branch on in step if:).
+      TEST_PYPI_API_TOKEN: ${{ secrets.TEST_PYPI_API_TOKEN }}
+      PYPI_API_TOKEN: ${{ secrets.PYPI_API_TOKEN }}
     steps:
       - uses: actions/download-artifact@v4
         with:
@@ -119,17 +123,38 @@ jobs:
       - name: Show artifacts
         run: ls -la dist
 
-      - name: Publish to TestPyPI
-        if: github.event_name == 'workflow_dispatch' && inputs.publish == 'testpypi'
+      - name: Publish to TestPyPI (Trusted Publishing)
+        if: github.event_name == 'workflow_dispatch' && inputs.publish == 'testpypi' && env.TEST_PYPI_API_TOKEN == ''
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
           repository-url: https://test.pypi.org/legacy/
           packages-dir: dist
 
-      - name: Publish to PyPI
+      - name: Publish to TestPyPI (API token)
+        if: github.event_name == 'workflow_dispatch' && inputs.publish == 'testpypi' && env.TEST_PYPI_API_TOKEN != ''
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          repository-url: https://test.pypi.org/legacy/
+          packages-dir: dist
+          user: __token__
+          password: ${{ env.TEST_PYPI_API_TOKEN }}
+
+      - name: Publish to PyPI (Trusted Publishing)
         if: >
-          (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v'))
-          || (github.event_name == 'workflow_dispatch' && inputs.publish == 'pypi')
+          ((github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v'))
+            || (github.event_name == 'workflow_dispatch' && inputs.publish == 'pypi'))
+          && env.PYPI_API_TOKEN == ''
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
           packages-dir: dist
+
+      - name: Publish to PyPI (API token)
+        if: >
+          ((github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v'))
+            || (github.event_name == 'workflow_dispatch' && inputs.publish == 'pypi'))
+          && env.PYPI_API_TOKEN != ''
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist
+          user: __token__
+          password: ${{ env.PYPI_API_TOKEN }}
