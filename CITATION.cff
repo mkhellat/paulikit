@@ -24,6 +24,8 @@ authors:
     family-names: Nasouri
     affiliation: Beavernets Technologies
 repository-code: "https://codeberg.org/beavernets/paulikit"
+# Wheel CI / GitHub mirror (not the citation canonical URL):
+# https://github.com/beavernets-inc/paulikit
 # Project contact rather than any individual's address: it survives
 # people changing roles, and a CITATION.cff is archived permanently
 # alongside the DOI.

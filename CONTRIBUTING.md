@@ -69,7 +69,9 @@ in the README.
 
 Manylinux wheels (x86_64 and aarch64, CPython 3.10–3.13) and the sdist
 are built by `.github/workflows/paulikit-wheels.yml` on the GitHub
-mirror: push a `v*` tag, or run the workflow manually. The job fails
+mirror
+([github.com/beavernets-inc/paulikit](https://github.com/beavernets-inc/paulikit)):
+push a `v*` tag, or run the workflow manually. The job fails
 if `wht_native` / `coeffs_native` / `gather_native` are missing from
 the wheel. musllinux, macOS, and Windows are intentionally not wheel
 targets; those platforms use the sdist and documented fallbacks.

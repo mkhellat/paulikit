@@ -9,6 +9,12 @@ versions; see the README's Status section.
 
 ## [Unreleased]
 
+### Changed
+
+- GitHub mirror URL retargeted to
+  [github.com/beavernets-inc/paulikit](https://github.com/beavernets-inc/paulikit)
+  (org transfer from `mkhellat/paulikit`).
+
 ## [0.1.0] - 2026-09-26
 
 First public release (PyPI target). Package contents were prepared
@@ -78,11 +84,12 @@ uploaded artifacts.
   reference built from the docstrings.
 
 - GitHub Actions workflow (`.github/workflows/paulikit-wheels.yml` on
-  the GitHub mirror) that builds manylinux wheels (x86_64 / aarch64,
-  CPython 3.10–3.13) and an sdist on tag / manual dispatch, with an
-  optional Trusted Publishing upload job. Codeberg remains the
-  canonical repository; hosted Forgejo runners are not used for the
-  manylinux matrix.
+  the GitHub mirror,
+  [github.com/beavernets-inc/paulikit](https://github.com/beavernets-inc/paulikit))
+  that builds manylinux wheels (x86_64 / aarch64, CPython 3.10–3.13)
+  and an sdist on tag / manual dispatch, with an optional Trusted
+  Publishing upload job. Codeberg remains the canonical repository;
+  hosted Forgejo runners are not used for the manylinux matrix.
 
 ### Changed
 

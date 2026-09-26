@@ -280,8 +280,10 @@ Known gaps:
   remain optional accelerators rather than a hard requirement —
   install from source as above. Manylinux wheels (and the sdist) are
   built by `.github/workflows/paulikit-wheels.yml` on the GitHub
-  mirror (`v*` tag or manual dispatch); publishing them is the next
-  release step. Codeberg is the canonical tree.
+  mirror
+  ([github.com/beavernets-inc/paulikit](https://github.com/beavernets-inc/paulikit);
+  `v*` tag or manual dispatch); publishing them is the next release
+  step. Codeberg is the canonical tree.
 - CPU pinning and topology detection are Linux-only, with a documented
   fallback elsewhere; the non-Linux paths are not yet exercised in CI.
 
