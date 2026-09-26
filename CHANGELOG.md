@@ -9,40 +9,11 @@ versions; see the README's Status section.
 
 ## [Unreleased]
 
-### Added
+## [0.1.0] - 2026-09-26
 
-- Threaded drain for `parallel_decompose_arrays` (`executor="thread"` /
-  `"auto"`), with physical-core pinning, capacity-weighted slices,
-  work-stealing, and optional eager thread spin-up.
-- Compiled gather and Hermiticity-check kernels under `wht_kernel`,
-  plus runtime-dispatched x86-64-v3 twins of the WHT and coefficient
-  kernels.
-- GitHub Actions workflow (`.github/workflows/paulikit-wheels.yml` on
-  the GitHub mirror) that builds manylinux wheels (x86_64 / aarch64,
-  CPython 3.10–3.13) and an sdist on tag / manual dispatch. Codeberg
-  remains the canonical repository; hosted Forgejo runners are not
-  used for the manylinux matrix.
-
-### Changed
-
-- README Usage leads with the measured sparse/dense fastest paths;
-  Sphinx tutorial, installation, and native docs match the multi-kernel
-  surface; `--chunk-size` help no longer claims auto-tuning is absent
-  from the library APIs.
-
-### Fixed
-
-- `make check` no longer dumps expected autotune/fork warnings from
-  intentional no-probe and process-pool tests.
-
-### Removed
-
-- Stale Status/CHANGELOG claim of an unexplained 14-to-15 qubit
-  parallel-efficiency step under the process-pool drain.
-
-## [0.1.0] - 2026-09-10
-
-First release.
+First public release (PyPI target). Package contents were prepared
+2026-09-10; this dated entry is the freeze for the first tagged /
+uploaded artifacts.
 
 ### Added
 
@@ -67,6 +38,9 @@ First release.
   process pool or a thread pool. Worker count is taken from the CPUs
   actually available to the process rather than from `os.cpu_count()`,
   so a cgroup- or cpuset-restricted machine is not oversubscribed.
+  Threaded drain (`executor="thread"` / `"auto"`) uses physical-core
+  pinning, capacity-weighted slices, work-stealing, and optional eager
+  thread spin-up.
 
 - **Checkpoint and restart.** A binary chunk-framed checkpoint format
   cheap enough to leave permanently enabled. Frames carry their own
@@ -80,7 +54,9 @@ First release.
   (Pauli label kernel with a oneTBB-parallel variant), and
   `cache_probe` (empirical cache-latency probe). All are optional: the
   package is correct and installable with no C toolchain, and reports
-  once when a fallback path is taken.
+  once when a fallback path is taken. Manylinux wheels ship
+  `wht_kernel` (+ `cache_probe`) with `-Dnative=disabled` (no oneTBB
+  in the wheel image); label generation falls back to pure Python.
 
 - **Cache-aware auto-tuning.** `paulikit.algorithms.autotune` sizes
   chunks against measured cache boundaries, interpolating between
@@ -101,12 +77,35 @@ First release.
   non-Hermitian operators, annotated source tree, and an API
   reference built from the docstrings.
 
+- GitHub Actions workflow (`.github/workflows/paulikit-wheels.yml` on
+  the GitHub mirror) that builds manylinux wheels (x86_64 / aarch64,
+  CPython 3.10–3.13) and an sdist on tag / manual dispatch, with an
+  optional Trusted Publishing upload job. Codeberg remains the
+  canonical repository; hosted Forgejo runners are not used for the
+  manylinux matrix.
+
+### Changed
+
+- README Usage leads with the measured sparse/dense fastest paths;
+  Sphinx tutorial, installation, and native docs match the multi-kernel
+  surface; `--chunk-size` help no longer claims auto-tuning is absent
+  from the library APIs.
+
+### Fixed
+
+- `make check` no longer dumps expected autotune/fork warnings from
+  intentional no-probe and process-pool tests.
+
+### Removed
+
+- Stale Status/CHANGELOG claim of an unexplained 14-to-15 qubit
+  parallel-efficiency step under the process-pool drain.
+
 ### Known limitations
 
-- Prebuilt wheels are not yet published on PyPI, so the compiled
-  extensions remain optional accelerators rather than hard
-  requirements. Manylinux wheels build on the GitHub mirror via
-  `.github/workflows/paulikit-wheels.yml`; Codeberg is canonical.
+- Until this version is uploaded to PyPI, install from a source
+  checkout or from CI wheel artifacts. Manylinux wheels omit
+  `pauli_label_native` (oneTBB); other kernels are gated in CI.
 - CPU pinning and topology detection are Linux-only, with a documented
   fallback elsewhere; the non-Linux paths are not exercised in CI.
 
