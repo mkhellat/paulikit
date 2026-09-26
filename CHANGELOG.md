@@ -9,6 +9,20 @@ versions; see the README's Status section.
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-09-26
+
+### Changed
+
+- **Serial `pauli_label_native` in manylinux wheels.** The label
+  kernel no longer requires oneTBB at build time: serial C + Cython
+  ships in the Linux wheels alongside `wht_kernel` and `cache_probe`.
+  The optional oneTBB parallel fill moved to
+  `pauli_label_parallel_native` (from-source / when TBB is present).
+  Measured e2e `list[str]` labeling gains only ~1.03× from TBB because
+  Python string construction dominates; wheels therefore do not vendor
+  TBB for that path. `-Dnative=enabled` now means the serial kernel is
+  required; oneTBB is never required for that option.
+
 ## [0.1.0] - 2026-09-26
 
 First public release (PyPI target). Package contents were prepared
@@ -114,5 +128,6 @@ uploaded artifacts.
 - CPU pinning and topology detection are Linux-only, with a documented
   fallback elsewhere; the non-Linux paths are not exercised in CI.
 
-[Unreleased]: https://codeberg.org/beavernets/paulikit/compare/v0.1.0...HEAD
+[Unreleased]: https://codeberg.org/beavernets/paulikit/compare/v0.1.1...HEAD
+[0.1.1]: https://codeberg.org/beavernets/paulikit/releases/tag/v0.1.1
 [0.1.0]: https://codeberg.org/beavernets/paulikit/releases/tag/v0.1.0
