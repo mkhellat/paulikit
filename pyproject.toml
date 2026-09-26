@@ -93,7 +93,7 @@ Repository = "https://codeberg.org/beavernets/paulikit"
 Documentation = "https://codeberg.org/beavernets/paulikit/src/branch/main/docs/index.md"
 "Issue tracker" = "https://codeberg.org/beavernets/paulikit/issues"
 # Mirror used for manylinux wheel CI (GitHub-hosted Docker runners).
-Mirror = "https://github.com/mkhellat/paulikit"
+Mirror = "https://github.com/beavernets-inc/paulikit"
 
 [project.scripts]
 paulikit = "paulikit.cli:main"

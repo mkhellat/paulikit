@@ -93,7 +93,7 @@ See [`docs/installation.md`](docs/installation.md) for editable-install
 sequencing and how to force the native extensions on or off. Canonical
 development is on
 [Codeberg](https://codeberg.org/beavernets/paulikit); a
-[GitHub mirror](https://github.com/mkhellat/paulikit) runs the
+[GitHub mirror](https://github.com/beavernets-inc/paulikit) runs the
 manylinux wheel workflow.
 
 

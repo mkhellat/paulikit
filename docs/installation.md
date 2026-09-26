@@ -123,7 +123,7 @@ hard requirement — prebuilt wheels are not yet on PyPI, so requiring
 a C toolchain for every `pip install` would be too heavy a default.
 CI builds manylinux wheels on tag / manual dispatch via
 `.github/workflows/paulikit-wheels.yml` on the GitHub mirror
-([github.com/mkhellat/paulikit](https://github.com/mkhellat/paulikit));
+([github.com/beavernets-inc/paulikit](https://github.com/beavernets-inc/paulikit));
 Codeberg remains the canonical tree. Once those wheels are published
 to PyPI, the kernels can become a hard requirement matching the
 NumPy/SciPy model.

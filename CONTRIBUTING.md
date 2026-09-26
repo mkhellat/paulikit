@@ -11,7 +11,7 @@ with it.
 (`origin`).
 
 **Mirror:**
-[github.com/mkhellat/paulikit](https://github.com/mkhellat/paulikit)
+[github.com/beavernets-inc/paulikit](https://github.com/beavernets-inc/paulikit)
 (`github`).
 
 Issues and pull requests are welcome at either. Prefer Codeberg when

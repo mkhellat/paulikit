@@ -3,7 +3,7 @@
 # Linux x86_64 + aarch64, CPython 3.10-3.13, musllinux/Windows/macOS
 # skipped by design.
 #
-# Runs on the GitHub mirror (github.com/mkhellat/paulikit). Codeberg
+# Runs on the GitHub mirror (github.com/beavernets-inc/paulikit). Codeberg
 # (codeberg.org/beavernets/paulikit) is the canonical repository;
 # hosted Forgejo Actions runners are not used for this matrix (need
 # Docker-capable manylinux builds). Manual or tag-triggered only —
